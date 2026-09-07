@@ -1,0 +1,17 @@
+# שומר את שרת Render ער — מונע את ה"שינה" של השכבה החינמית (אחרי 15 דק׳),
+# שגרמה להתחברות/חיפוש ראשונים לחכות ~דקה עד שהשרת מתעורר.
+# פינג ל-/api/health כל 10 דקות. פועל בחינם ב-GitHub Actions.
+name: keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # כל 10 דקות (מתחת לסף ה-15 של Render)
+  workflow_dispatch: {} # אפשר להריץ ידנית מ-Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          curl -sS -m 70 "https://nadlan-360-api.onrender.com/api/health" || true
