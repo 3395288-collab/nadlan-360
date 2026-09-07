@@ -1856,9 +1856,9 @@ function LiveSourcesPanel({
         {fromCache ? (
           <span
             className="ms-2 inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"
-            title="התוצאה הגיעה ממטמון של 24 שעות — לא חויב קרדיט"
+            title="הנתונים נלקחו מהמאגר השמור (שבועיים וחצי) — לא חויב קרדיט"
           >
-            ⚡ מהמאגר השמור · ללא חיוב
+            ⚡ הנתונים מהמאגר השמור · ללא חיוב
           </span>
         ) : (
           <span className="ms-2 inline-flex items-center gap-1 text-[11px] text-emerald-600">
@@ -1877,7 +1877,7 @@ function LiveSourcesPanel({
       </div>
       <p className="text-[12px] text-slate-400 mb-4">
         {fromCache
-          ? "העיר הזו כבר נשאבה — הנתונים מוגשים מהמאגר השמור (חודש) ואינם עולים כלום."
+          ? "העיר הזו כבר נשאבה — הנתונים מוגשים מהמאגר השמור (שבועיים וחצי) ואינם עולים כלום."
           : "נשאב אוטומטית מול מחיר הסגירה של רשות המסים"}
       </p>
 
