@@ -26,6 +26,12 @@ services:
         sync: false
       - key: APIFY_TOKEN_4
         sync: false
+      - key: APIFY_TOKEN_5
+        sync: false
+      - key: APIFY_TOKEN_6
+        sync: false
+      - key: APIFY_TOKEN_7
+        sync: false
       # פרטי הכניסה ההתחלתיים. שינוי כאן = איפוס סיסמה למצב התחלתי.
       - key: AUTH_USER
         sync: false
@@ -37,7 +43,7 @@ services:
       - key: GITHUB_CACHE_TOKEN
         sync: false
       - key: GITHUB_CACHE_REPO
-        value: chananeltz/nadlan-360-cache
+        value: 3395288-collab/nadlan-360-cache
       # מצמצם מי רשאי לקרוא ל-API. ריק = פתוח לכולם.
       - key: ALLOWED_ORIGINS
-        value: https://chananeltz.github.io
+        value: https://3395288-collab.github.io
