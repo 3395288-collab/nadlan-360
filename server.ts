@@ -874,6 +874,8 @@ app.get("/api/sources/:source", async (req, res) => {
   // cacheOnly: מגיש רק מה שכבר נשאב, בלי לפנות ל-Apify. משמש כשהקרדיט
   // נגמר — עדיף להציג נתון שמור מאשר מסך ריק.
   const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+  // fresh=1: חיפוש טרי — מדלג על המטמון ושואב מהמקור (לבדיקת עדכונים).
+  const forceFresh = req.query.fresh === "1" || req.query.fresh === "true";
 
   if (!city) {
     res.status(400).json({ error: "חסרה עיר" });
@@ -887,16 +889,16 @@ app.get("/api/sources/:source", async (req, res) => {
   try {
     switch (source) {
       case "yad2":
-        res.json(await fetchYad2(city, street, 120, cacheOnly));
+        res.json(await fetchYad2(city, street, 120, cacheOnly, forceFresh));
         return;
       case "yad1":
-        res.json(await fetchYad1(city, street, 120, cacheOnly));
+        res.json(await fetchYad1(city, street, 120, cacheOnly, forceFresh));
         return;
       case "madlan":
-        res.json(await fetchMadlan(city, neighbourhood || undefined, cacheOnly));
+        res.json(await fetchMadlan(city, neighbourhood || undefined, cacheOnly, forceFresh));
         return;
       case "facebook":
-        res.json(await fetchFacebook(city, street, 140, cacheOnly));
+        res.json(await fetchFacebook(city, street, 140, cacheOnly, forceFresh));
         return;
       default:
         res.status(404).json({ error: `מקור לא מוכר: ${source}` });
@@ -926,9 +928,13 @@ app.get("/api/sources/:source", async (req, res) => {
  */
 app.get("/api/deals", async (req, res) => {
   const city = String(req.query.city || "").trim();
+  // area: שכונה/רחוב למיקוד השאיבה סביב המקום המבוקש (ולא שכונה אקראית בעיר).
+  const area = String(req.query.area || "").trim();
   const monthsBack = Math.max(0, Number(req.query.months) || 24);
-  const maxItems = Math.min(300, Math.max(10, Number(req.query.maxItems) || 120));
+  const maxItems = Math.min(400, Math.max(10, Number(req.query.maxItems) || 120));
   const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+  // fresh=1: חיפוש טרי — מדלג על המטמון ושואב מהמקור (לבדיקת עדכונים).
+  const forceFresh = req.query.fresh === "1" || req.query.fresh === "true";
 
   if (!city) {
     res.status(400).json({ error: "חסרה עיר לשליפת עסקאות סגורות" });
@@ -942,12 +948,12 @@ app.get("/api/deals", async (req, res) => {
   try {
     // raw=1: החזרת השורות הגולמיות מהמטמון בלבד (ללא חיוב) — לאבחון בלבד.
     if (req.query.raw === "1") {
-      const raw = await fetchNadlanDealsRaw(city, monthsBack, maxItems, true);
-      res.json({ source: "nadlan-raw", city, count: raw.length, sampleKeys: raw[0] ? Object.keys(raw[0]) : [], sample: raw.slice(0, 2) });
+      const raw = await fetchNadlanDealsRaw(city, monthsBack, maxItems, true, false, area);
+      res.json({ source: "nadlan-raw", city, area, count: raw.length, sampleKeys: raw[0] ? Object.keys(raw[0]) : [], sample: raw.slice(0, 2) });
       return;
     }
-    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly);
-    res.json({ source: "nadlan", city, count: deals.length, deals });
+    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly, forceFresh, area);
+    res.json({ source: "nadlan", city, area, count: deals.length, deals });
   } catch (error: any) {
     if (error instanceof CacheMissError) {
       res.status(200).json({ source: "nadlan", city, count: 0, deals: [], cacheMiss: true });

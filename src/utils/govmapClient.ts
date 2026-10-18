@@ -331,6 +331,8 @@ export interface FindDealsOptions {
   /** סינון קדסטרלי לפי גוש/חלקה אחרי השאיבה (האקטור שולף ברמת עיר). */
   gush?: number;
   helka?: number;
+  /** "חיפוש טרי" — מדלג על המטמון ושואב מהמקור, לבדיקת עדכונים. */
+  forceFresh?: boolean;
 }
 
 /** מנרמל שם רחוב להשוואת כפילויות: מסיר "רחוב"/"רח׳", פסיקים ורווחים כפולים. */
@@ -402,14 +404,17 @@ function monthsBucket(monthsBack: number): string {
  * מקומי + גיבוי seed. השאיבה ברמת עיר בכוונה — כך חיפוש חוזר באותה עיר
  * (גם ברחוב/חדרים/טווח אחרים) מוגש חינם מהמטמון. הסינון העדין נעשה בלקוח.
  */
-async function fetchCityDeals(city: string, monthsBack: number): Promise<Deal[]> {
+async function fetchCityDeals(city: string, monthsBack: number, forceFresh = false): Promise<Deal[]> {
   const cacheKey = `deals_${city.trim()}_${monthsBucket(monthsBack)}`;
-  const cached = readLocalCache<Deal[]>(cacheKey);
-  if (cached) return cached;
+  // חיפוש טרי: מדלגים על המטמון המקומי ועל ה-seed, ושואבים מהשרת מחדש.
+  if (!forceFresh) {
+    const cached = readLocalCache<Deal[]>(cacheKey);
+    if (cached) return cached;
+  }
 
   try {
     // maxItems קבוע (120) כדי לא לפצל את מטמון השרת לפי בקשות שונות.
-    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120`;
+    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120${forceFresh ? "&fresh=1" : ""}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
     if (r.ok) {
       const d = await r.json();
@@ -422,6 +427,8 @@ async function fetchCityDeals(city: string, monthsBack: number): Promise<Deal[]>
     // ממשיכים ל-seed
   }
   // גיבוי seed מ-Git: עסקאות שנשמרו פעם אחת, מוגשות לכל מכשיר בחינם.
+  // בחיפוש טרי לא נופלים ל-seed (רוצים דווקא נתון עדכני).
+  if (forceFresh) return [];
   return (await readSeedCache<Deal[]>(LOCAL_CACHE_PREFIX + cacheKey)) || [];
 }
 
@@ -466,7 +473,7 @@ export async function findRecentDealsForAddress(
   );
 
   // שאיבה ברמת עיר (מטמון + seed), ואז סינון מקומי מדויק.
-  const all = await fetchCityDeals(city, monthsBack);
+  const all = await fetchCityDeals(city, monthsBack, options.forceFresh);
   if (!all.length) return [];
 
   // 1) חלון תאריכים (השוואת מחרוזות YYYY-MM-DD בטוחה).
@@ -570,9 +577,9 @@ export interface BridgeResult {
  * של אותה עיר לא עולה כלום גם אחרי שהשרת התאפס.
  */
 const LOCAL_CACHE_PREFIX = "nadlan360_cache_";
-// שבועיים וחצי — תואם למטמון שבשרת. שאיבה עולה קרדיט ומחירים זזים לאט,
-// ולכן עדיף נתון שמור בחינם מאשר חיוב חוזר על אותה עיר.
-const LOCAL_CACHE_TTL_MS = 420 * 60 * 60 * 1000; // שבועיים וחצי (420 שעות)
+// שבועיים — תואם למטמון שבשרת. שאיבה עולה קרדיט ומחירים זזים לאט, ולכן
+// עדיף נתון שמור בחינם מאשר חיוב חוזר על אותה עיר. יש "חיפוש טרי" לעדכון מיידי.
+const LOCAL_CACHE_TTL_MS = 336 * 60 * 60 * 1000; // שבועיים (336 שעות)
 
 function readLocalCache<T>(key: string): T | null {
   try {
@@ -687,15 +694,18 @@ export async function bridgeScrape(
   city: string,
   street: string,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<BridgeResult | null> {
   const cacheKey = `src_${source}_${city.trim()}_${street.trim()}`;
-  const cached = readLocalCache<BridgeResult>(cacheKey);
-  if (cached) return cached;
+  if (!forceFresh) {
+    const cached = readLocalCache<BridgeResult>(cacheKey);
+    if (cached) return cached;
+  }
 
   try {
     const url = `${API_BASE}/api/sources/${encodeURIComponent(source)}?city=${encodeURIComponent(
       city,
-    )}&street=${encodeURIComponent(street)}${cacheOnly ? "&cacheOnly=1" : ""}`;
+    )}&street=${encodeURIComponent(street)}${cacheOnly ? "&cacheOnly=1" : ""}${forceFresh ? "&fresh=1" : ""}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(280000) });
     if (r.ok) {
       const d = await r.json();
@@ -805,13 +815,15 @@ export interface MadlanAnalytics {
 }
 
 /** אנליטיקת מדלן ברמת עיר — מחיר למ"ר, מגמה שנתית, היצע ומדד חברתי. */
-export async function fetchMadlanAnalytics(city: string, cacheOnly = false): Promise<MadlanAnalytics | null> {
+export async function fetchMadlanAnalytics(city: string, cacheOnly = false, forceFresh = false): Promise<MadlanAnalytics | null> {
   const cacheKey = `madlan_${city.trim()}`;
-  const cached = readLocalCache<MadlanAnalytics>(cacheKey);
-  if (cached) return cached;
+  if (!forceFresh) {
+    const cached = readLocalCache<MadlanAnalytics>(cacheKey);
+    if (cached) return cached;
+  }
 
   try {
-    const suffix = cacheOnly ? "&cacheOnly=1" : "";
+    const suffix = `${cacheOnly ? "&cacheOnly=1" : ""}${forceFresh ? "&fresh=1" : ""}`;
     const r = await fetch(`${API_BASE}/api/sources/madlan?city=${encodeURIComponent(city)}${suffix}`, {
       signal: AbortSignal.timeout(280000),
     });

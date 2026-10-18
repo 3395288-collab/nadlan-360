@@ -32,6 +32,7 @@ import {
   X,
   Scale,
   Layers,
+  RefreshCw,
 } from "lucide-react";
 import {
   findRecentDealsForAddress,
@@ -449,7 +450,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   // שואב אוטומטית מכל מקורות המחיר-המבוקש דרך השרת (שרץ מול Apify).
   // כל מקור מתעדכן ברגע שהוא חוזר — אין המתנה לאיטי מכולם.
-  async function runBridge(city: string, street: string) {
+  async function runBridge(city: string, street: string, forceFresh = false) {
     setLiveSources([]);
     setMadlan(null);
     setCredit(null);
@@ -486,12 +487,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const startedAt = Date.now();
     const listings = ["yad2", "yad1", "facebook"].map((s) =>
-      bridgeScrape(s, city, street, cacheOnly).then((res) => {
+      bridgeScrape(s, city, street, cacheOnly, forceFresh).then((res) => {
         if (res && res.count) setLiveSources((prev) => [...prev.filter((p) => p.source !== res.source), res]);
       }),
     );
     // מדלן מחזיר אנליטיקה עירונית (מגמה, היצע, מדד) ולא רשימת מודעות.
-    const analytics = fetchMadlanAnalytics(city, cacheOnly).then((d) => {
+    const analytics = fetchMadlanAnalytics(city, cacheOnly, forceFresh).then((d) => {
       if (d && d.pricePerSqm) setMadlan(d);
     });
 
@@ -556,6 +557,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     yb = yearsBack,
     gh = gushHelka,
     range = customRange ? { from: fromMonth, to: toMonth } : null,
+    fresh = false,
   ) {
     const cityClean = c.trim();
     const streetClean = s.trim();
@@ -587,7 +589,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     // ולכן בחיפוש קדסטרלי מציגים אך ורק את נתוני רשות המסים.
     if (cityClean && !parsedGush) {
       getSocioEconomic(cityClean).then(setSocio).catch(() => setSocio(null));
-      runBridge(cityClean, streetClean);
+      runBridge(cityClean, streetClean, fresh);
     }
     try {
       // טווח מותאם פעיל רק כששני הצדדים מולאו; אחרת נשענים על yearsBack.
@@ -599,6 +601,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         // השאיבה ברמת עיר; הסינון לרחוב/גוש-חלקה נעשה בלקוח.
         city: cityClean,
         street: streetClean,
+        forceFresh: fresh,
         ...(parsedGush ? { gush: parsedGush.gush, helka: parsedGush.helka } : {}),
         ...(useRange ? { startDate: range!.from, endDate: range!.to } : {}),
       });
@@ -746,6 +749,25 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 {loading ? <Loader2 size={19} className="animate-spin" /> : <Search size={19} />}
                 <span>חיפוש</span>
               </button>
+            </div>
+
+            {/* חיפוש טרי — מדלג על המאגר השמור ושואב מהמקור, לבדיקת עדכונים.
+                חיפוש רגיל מגיש מהמאגר (חינם, מיידי) עד שבועיים; זה מרענן בתשלום. */}
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() =>
+                  runSearch(city, street, dealType, yearsBack, gushHelka, customRange ? { from: fromMonth, to: toMonth } : null, true)
+                }
+                disabled={loading}
+                className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 text-indigo-700 font-medium px-3 py-1.5 text-[13px] transition"
+              >
+                <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+                חיפוש טרי מהמקור
+              </button>
+              <span className="text-[11.5px] text-slate-400">
+                בודק אם יצאו עדכונים חדשים (לא מהמאגר השמור) · צורך מעט קרדיט
+              </span>
             </div>
 
             {/* גוש וחלקה — איתור קדסטרלי מדויק. רק רשות המסים מכירה גוש/חלקה,
@@ -1007,9 +1029,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 madlan={madlan}
                 fromCache={fromCache}
                 onRefresh={() => {
-                  // רענון יזום: מנקים את המטמון המקומי כדי לאלץ שאיבה טרייה.
-                  clearLocalCache();
-                  runBridge(city.trim(), street.trim());
+                  // רענון יזום: חיפוש טרי שמדלג על המטמון (מקומי ושרת) ומושך מהמקור.
+                  runBridge(city.trim(), street.trim(), true);
                 }}
               />
             )}
@@ -1709,7 +1730,7 @@ function SourcesStatusNotice({ credit }: { credit: CreditStatus }) {
       credit.usedUsd != null ? `$${credit.usedUsd}` : "כל הסכום"
     }${
       credit.capUsd ? ` מתוך $${credit.capUsd}` : ""
-    }. ערים שכבר חיפשת מוצגות מהמאגר השמור (נשמר לחודש), אך העיר הזו טרם נשאבה. הקרדיט מתחדש בתחילת מחזור החיוב הבא.`;
+    }. ערים שכבר חיפשת מוצגות מהמאגר השמור (נשמר לשבועיים), אך העיר הזו טרם נשאבה. הקרדיט מתחדש בתחילת מחזור החיוב הבא.`;
     link = { href: "https://console.apify.com/billing/subscription", label: "לניהול הקרדיט ב-Apify" };
   } else if (credit.unknown) {
     body = "לא הצלחנו לבדוק את מצב הקרדיט. נסו שוב בעוד רגע.";
@@ -1858,7 +1879,7 @@ function LiveSourcesPanel({
         {fromCache ? (
           <span
             className="ms-2 inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"
-            title="הנתונים נלקחו מהמאגר השמור (שבועיים וחצי) — לא חויב קרדיט"
+            title="הנתונים נלקחו מהמאגר השמור (שבועיים) — לא חויב קרדיט"
           >
             ⚡ הנתונים מהמאגר השמור · ללא חיוב
           </span>
@@ -1879,7 +1900,7 @@ function LiveSourcesPanel({
       </div>
       <p className="text-[12px] text-slate-400 mb-4">
         {fromCache
-          ? "העיר הזו כבר נשאבה — הנתונים מוגשים מהמאגר השמור (שבועיים וחצי) ואינם עולים כלום."
+          ? "העיר הזו כבר נשאבה — הנתונים מוגשים מהמאגר השמור (שבועיים) ואינם עולים כלום."
           : "נשאב אוטומטית מול מחיר הסגירה של רשות המסים"}
       </p>
 

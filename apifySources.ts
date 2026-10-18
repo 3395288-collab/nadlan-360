@@ -78,11 +78,11 @@ function median(nums: number[]): number {
  * היותר נשלם שוב על החיפוש הראשון.
  */
 /**
- * שבועיים וחצי. איזון בין טריות לחיסכון: שאיבה עולה קרדיט, אבל מחירי
- * נדל"ן זזים לאט — נתון בן שבועיים וחצי עדיין מייצג, ומוגש חינם מהמטמון
- * במקום לחייב שוב על אותה עיר. יש גם כפתור "רענן" למי שרוצה נתון טרי מיד.
+ * שבועיים. איזון בין טריות לחיסכון: שאיבה עולה קרדיט, אבל מחירי נדל"ן
+ * זזים לאט — נתון בן שבועיים עדיין מייצג, ומוגש חינם מהמטמון במקום לחייב
+ * שוב על אותה עיר. יש גם "חיפוש טרי" למי שרוצה לבדוק עדכונים מיד.
  */
-const CACHE_TTL_MS = 420 * 60 * 60 * 1000; // שבועיים וחצי (420 שעות)
+const CACHE_TTL_MS = 336 * 60 * 60 * 1000; // שבועיים (336 שעות)
 const MAX_CACHE_ENTRIES = 300; // תקרה כדי שהזיכרון לא יגדל ללא הגבלה
 
 interface CacheEntry {
@@ -178,29 +178,36 @@ async function runActor(
   input: unknown,
   timeoutMs = 240000,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<any[]> {
   const allTokens = getTokens();
   if (!allTokens.length && !cacheOnly) throw new Error("אין טוקן Apify מוגדר (APIFY_TOKEN)");
 
   const cacheKey = `${actor}|${JSON.stringify(input)}`;
-  const cached = resultCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
-    const ageMin = Math.round((Date.now() - cached.at) / 60000);
-    console.log(`[apify] מטמון: ${actor} (גיל ${ageMin} דק׳) — לא חויב`);
-    return cached.rows;
-  }
-  // המטמון בזיכרון מת עם כל אתחול של השרת. לפני שמשלמים על שאיבה,
-  // בודקים את האחסון המתמיד — שם התוצאה שורדת אתחולים ופריסות.
-  if (isGithubStoreEnabled()) {
-    const stored = await readFromGithub(cacheKey, CACHE_TTL_MS);
-    if (stored) {
-      resultCache.set(cacheKey, { at: stored.at, rows: stored.rows });
-      const ageH = Math.round((Date.now() - stored.at) / 3600000);
-      console.log(`[apify] אחסון מתמיד: ${actor} (גיל ${ageH} ש׳) — לא חויב`);
-      return stored.rows;
+  // forceFresh: המשתמש ביקש "חיפוש טרי" — מדלגים על קריאות המטמון ושואבים
+  // מהמקור, ואז דורסים את המטמון בתוצאה החדשה (כך בדיקה אם יצאו עדכונים).
+  if (!forceFresh) {
+    const cached = resultCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+      const ageMin = Math.round((Date.now() - cached.at) / 60000);
+      console.log(`[apify] מטמון: ${actor} (גיל ${ageMin} דק׳) — לא חויב`);
+      return cached.rows;
+    }
+    // המטמון בזיכרון מת עם כל אתחול של השרת. לפני שמשלמים על שאיבה,
+    // בודקים את האחסון המתמיד — שם התוצאה שורדת אתחולים ופריסות.
+    if (isGithubStoreEnabled()) {
+      const stored = await readFromGithub(cacheKey, CACHE_TTL_MS);
+      if (stored) {
+        resultCache.set(cacheKey, { at: stored.at, rows: stored.rows });
+        const ageH = Math.round((Date.now() - stored.at) / 3600000);
+        console.log(`[apify] אחסון מתמיד: ${actor} (גיל ${ageH} ש׳) — לא חויב`);
+        return stored.rows;
+      }
     }
   }
 
+  // חיפוש טרי אינו יכול להתקיים יחד עם "מטמון בלבד": אם אין קרדיט, אין
+  // אפשרות לשאיבה טרייה, ולכן נשארים עם מה שיש (ולא זורקים).
   if (cacheOnly) throw new CacheMissError(actor);
 
   // רוטציה: מנסים טוקנים לפי הסדר, מדלגים על אלה שכבר סומנו כמוצו.
@@ -383,12 +390,14 @@ export async function fetchYad2(
   street: string,
   maxItems = 120,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<SourceResult> {
   const rows = await runActor(
     ACTORS.yad2,
     { city: toEnglishCity(city), dealType: "buy", maxItems },
     240000,
     cacheOnly,
+    forceFresh,
   );
   return summarize(rows, "yad2", street, (r) => r.streetName || r.address, (r) => r.price, (r) => r.areaSqm);
 }
@@ -402,12 +411,14 @@ export async function fetchYad1(
   street: string,
   maxItems = 120,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<SourceResult> {
   const rows = await runActor(
     ACTORS.yad2,
     { city: toEnglishCity(city), dealType: "buy", maxItems },
     240000,
     cacheOnly,
+    forceFresh,
   );
   const fromDeveloper = rows.filter(
     (r) => r.adType === "project" || r.adType === "agency" || r.hasAgent === true,
@@ -433,10 +444,11 @@ export async function fetchMadlan(
   city: string,
   neighbourhood?: string,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<MadlanAnalytics> {
   const input: Record<string, unknown> = { city: toEnglishCity(city), dataTypes: ["all"] };
   if (neighbourhood) input.neighbourhood = neighbourhood;
-  const rows = await runActor(ACTORS.madlan, input, 240000, cacheOnly);
+  const rows = await runActor(ACTORS.madlan, input, 240000, cacheOnly, forceFresh);
   const d = rows[0] || {};
 
   const byRooms = Array.isArray(d.pricesByRooms) ? d.pricesByRooms : [];
@@ -476,6 +488,7 @@ export async function fetchFacebook(
   street: string,
   maxItems = 140,
   cacheOnly = false,
+  forceFresh = false,
 ): Promise<SourceResult> {
   // חיפוש חופשי (search/?query=) מתעלם מהמיקום ומחזיר מודעות אמריקאיות
   // בדולרים. כתובת מיקום ישראלית מחזירה מודעות בשקלים — אך הן ארציות,
@@ -488,6 +501,7 @@ export async function fetchFacebook(
     },
     240000,
     cacheOnly,
+    forceFresh,
   );
   // חיפוש חופשי ב-Marketplace מחזיר גם רהיטים ורכבים, שמושכים את החציון
   // מטה עד לחוסר משמעות. שומרים רק פריטים שגם נראים כמו דירה בכותרת וגם
@@ -714,6 +728,8 @@ export async function fetchNadlanDealsRaw(
   monthsBack = 24,
   maxItems = 120,
   cacheOnly = false,
+  forceFresh = false,
+  neighborhood = "",
 ): Promise<any[]> {
   const canonical = canonicalCity(city);
   const input: Record<string, unknown> = {
@@ -722,8 +738,11 @@ export async function fetchNadlanDealsRaw(
   };
   if (canonical) input.cities = [canonical];
   else input.customCities = [city.trim()];
+  // מיקוד לאזור המבוקש: האקטור מגאוקד את השכונה/רחוב ואוסף עסקאות סביבה.
+  // בלי זה שאיבת "עיר" מחזירה שכונה אקראית אחת (מפתח לתיקון חיפוש לפי מקום).
+  if (neighborhood && neighborhood.trim()) input.neighborhoods = [neighborhood.trim()];
 
-  return runActor(ACTORS.nadlan, input, 300000, cacheOnly);
+  return runActor(ACTORS.nadlan, input, 300000, cacheOnly, forceFresh);
 }
 
 export async function fetchNadlanDeals(
@@ -731,8 +750,10 @@ export async function fetchNadlanDeals(
   monthsBack = 24,
   maxItems = 120,
   cacheOnly = false,
+  forceFresh = false,
+  neighborhood = "",
 ): Promise<NadlanDeal[]> {
-  const rows = await fetchNadlanDealsRaw(city, monthsBack, maxItems, cacheOnly);
+  const rows = await fetchNadlanDealsRaw(city, monthsBack, maxItems, cacheOnly, forceFresh, neighborhood);
   return rows
     .map(mapNadlanRow)
     .filter((d): d is NadlanDeal => d !== null);
