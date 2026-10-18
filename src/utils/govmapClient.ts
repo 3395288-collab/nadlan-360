@@ -182,6 +182,29 @@ export interface AutocompleteMatch {
   type: string;
   score: number;
   point: [number, number] | null;
+  /** שם הרחוב הנקי מתוך ה-id (למשל "דיזנגוף"), כשזו תוצאת רחוב/כתובת. */
+  streetName?: string;
+  /** שם העיר הנקי מתוך ה-id (למשל "תל אביב"). */
+  cityName?: string;
+}
+
+/**
+ * מפענח את ה-id של govmap לשמות נקיים. דוגמאות:
+ *   "street|STREET_MID_POINT|36627|דיזנגוף|תל אביב"  → street=דיזנגוף, city=תל אביב
+ *   "address|...|דיזנגוף 100|תל אביב"               → street=דיזנגוף 100, city=תל אביב
+ *   "settlement|...|תל אביב-יפו"                     → city=תל אביב-יפו
+ */
+function parseAutoId(id: unknown, type: string): { streetName?: string; cityName?: string } {
+  const parts = String(id || "").split("|");
+  if (!parts.length) return {};
+  if (type === "street" || type === "address") {
+    // שני השדות האחרונים: רחוב ואז עיר.
+    const cityName = parts[parts.length - 1] || undefined;
+    const streetName = parts[parts.length - 2] || undefined;
+    return { streetName, cityName };
+  }
+  // יישוב/עיר: השדה האחרון הוא שם העיר.
+  return { cityName: parts[parts.length - 1] || undefined };
 }
 
 /** ממיר טקסט כתובת חופשי לרשימת התאמות עם קואורדינטות ITM. */
@@ -190,12 +213,18 @@ export async function autocompleteAddress(searchText: string): Promise<Autocompl
   const payload = { searchText, language: "he", isAccurate: false, maxResults: 10 };
   const data = await withRetry(() => postJson(url, payload));
   const results = Array.isArray(data?.results) ? data.results : [];
-  return results.map((r: any) => ({
-    text: r.text || "",
-    type: r.type || "",
-    score: r.score || 0,
-    point: parsePoint(r.shape),
-  }));
+  return results.map((r: any) => {
+    const type = r.type || "";
+    const ids = parseAutoId(r.id, type);
+    return {
+      text: r.text || "",
+      type,
+      score: r.score || 0,
+      point: parsePoint(r.shape),
+      streetName: ids.streetName,
+      cityName: ids.cityName,
+    };
+  });
 }
 
 /** מחזיר metadata של פוליגונים (רחובות/שכונות) ברדיוס נתון סביב נקודה. */
@@ -404,8 +433,11 @@ function monthsBucket(monthsBack: number): string {
  * מקומי + גיבוי seed. השאיבה ברמת עיר בכוונה — כך חיפוש חוזר באותה עיר
  * (גם ברחוב/חדרים/טווח אחרים) מוגש חינם מהמטמון. הסינון העדין נעשה בלקוח.
  */
-async function fetchCityDeals(city: string, monthsBack: number, forceFresh = false): Promise<Deal[]> {
-  const cacheKey = `deals_${city.trim()}_${monthsBucket(monthsBack)}`;
+async function fetchCityDeals(city: string, monthsBack: number, forceFresh = false, area = ""): Promise<Deal[]> {
+  const areaKey = area.trim();
+  // המפתח כולל את האזור: מיקוד לשכונה/רחוב מחזיר עסקאות אחרות מ"כל העיר",
+  // ולכן נשמר בנפרד — כך חיפוש חוזר לאותו אזור מוגש חינם מהמטמון.
+  const cacheKey = `deals_${city.trim()}_${areaKey}_${monthsBucket(monthsBack)}`;
   // חיפוש טרי: מדלגים על המטמון המקומי ועל ה-seed, ושואבים מהשרת מחדש.
   if (!forceFresh) {
     const cached = readLocalCache<Deal[]>(cacheKey);
@@ -413,8 +445,9 @@ async function fetchCityDeals(city: string, monthsBack: number, forceFresh = fal
   }
 
   try {
-    // maxItems קבוע (120) כדי לא לפצל את מטמון השרת לפי בקשות שונות.
-    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120${forceFresh ? "&fresh=1" : ""}`;
+    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120${
+      areaKey ? `&area=${encodeURIComponent(areaKey)}` : ""
+    }${forceFresh ? "&fresh=1" : ""}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
     if (r.ok) {
       const d = await r.json();
@@ -447,7 +480,9 @@ export async function findRecentDealsForAddress(
   const maxDeals = options.maxDeals ?? 100;
   const dealType = options.dealType ?? 2;
 
-  const city = (options.city || deriveCityFromAddress(address)).trim();
+  // חיפוש גוש/חלקה אינו מכיל עיר בטקסט, ולכן אסור לנחש עיר מתוכו —
+  // נדרשת עיר מפורשת. בכתובת רגילה אפשר לגזור עיר מהטקסט.
+  const city = (options.city || (options.gush ? "" : deriveCityFromAddress(address))).trim();
   if (!city) {
     throw new Error(
       options.gush
@@ -472,8 +507,12 @@ export async function findRecentDealsForAddress(
     Math.round((now.getTime() - new Date(fromStr).getTime()) / (30 * 24 * 3600 * 1000)),
   );
 
-  // שאיבה ברמת עיר (מטמון + seed), ואז סינון מקומי מדויק.
-  const all = await fetchCityDeals(city, monthsBack, options.forceFresh);
+  // האזור למיקוד השאיבה: שם הרחוב/השכונה ללא מספר בית (בעברית מקורית).
+  // בלעדיו שאיבת "עיר" מחזירה שכונה אקראית אחת ולא את המקום המבוקש.
+  const areaText = (options.street || "").replace(/[\s,]+\d+[א-ת]?\s*$/, "").trim();
+
+  // שאיבה ממוקדת-אזור (מטמון + seed), ואז סינון מקומי מדויק.
+  const all = await fetchCityDeals(city, monthsBack, options.forceFresh, areaText);
   if (!all.length) return [];
 
   // 1) חלון תאריכים (השוואת מחרוזות YYYY-MM-DD בטוחה).

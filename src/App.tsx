@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   ResponsiveContainer,
   BarChart,
@@ -50,6 +50,8 @@ import {
   scoreNeighborhoods,
   seedSource,
   seedMadlan,
+  autocompleteAddress,
+  type AutocompleteMatch,
   type Deal,
   type NeighborhoodScore,
   type DealStatistics,
@@ -96,6 +98,158 @@ function creditRemaining(credit: CreditStatus | null): number | null {
 function searchesLeft(credit: CreditStatus | null): number | null {
   const rem = creditRemaining(credit);
   return rem == null ? null : Math.floor(rem / EST_COST_PER_SEARCH);
+}
+
+/**
+ * שדה עם השלמה אוטומטית של ערים/רחובות מ-GovMap (רץ בדפדפן, חינם).
+ * kind="city" מציג יישובים; kind="street" מצרף את העיר לשאילתה ומציג
+ * רחובות/כתובות. בבחירה מעדכן את השדה בשם הנקי שהמערכת תחפש לפיו.
+ */
+function AddressAutocomplete({
+  value,
+  onChange,
+  onPickCity,
+  placeholder,
+  icon,
+  ariaLabel,
+  disabled,
+  kind,
+  cityForStreet,
+  onEnter,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onPickCity?: (city: string) => void;
+  placeholder: string;
+  icon: React.ReactNode;
+  ariaLabel: string;
+  disabled?: boolean;
+  kind: "city" | "street";
+  cityForStreet?: string;
+  onEnter?: () => void;
+}) {
+  const [items, setItems] = useState<AutocompleteMatch[]>([]);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const boxRef = useRef<HTMLDivElement>(null);
+  // מונע הצגת הצעות מיד אחרי בחירה (הבחירה משנה את value, שמריץ חיפוש חדש).
+  const justPicked = useRef(false);
+
+  useEffect(() => {
+    if (justPicked.current) {
+      justPicked.current = false;
+      return;
+    }
+    const q = value.trim();
+    if (q.length < 2) {
+      setItems([]);
+      setOpen(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const searchText =
+          kind === "street" && cityForStreet?.trim() ? `${q} ${cityForStreet.trim()}` : q;
+        const res = await autocompleteAddress(searchText);
+        const wanted =
+          kind === "city"
+            ? res.filter((r) => r.type === "settlement" || r.type === "city")
+            : res.filter((r) => r.type === "street" || r.type === "address");
+        const list = (wanted.length ? wanted : res).slice(0, 7);
+        setItems(list);
+        setOpen(list.length > 0);
+        setActive(-1);
+      } catch {
+        setItems([]);
+      }
+    }, 220);
+    return () => clearTimeout(t);
+  }, [value, kind, cityForStreet]);
+
+  // סגירה בלחיצה מחוץ לרכיב.
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  function pick(m: AutocompleteMatch) {
+    justPicked.current = true;
+    if (kind === "city") {
+      const name = m.cityName || m.text;
+      onChange(name);
+    } else {
+      // רחוב: ממלאים את שם הרחוב הנקי, ואם זוהתה עיר — ממלאים גם אותה.
+      onChange(m.streetName || m.text);
+      if (m.cityName && onPickCity) onPickCity(m.cityName);
+    }
+    setOpen(false);
+    setItems([]);
+  }
+
+  return (
+    <div ref={boxRef} className="relative flex-1">
+      <label className="flex items-center gap-2 rounded-2xl bg-slate-50 border border-slate-200 px-3.5 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 transition">
+        {icon}
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => items.length && setOpen(true)}
+          onKeyDown={(e) => {
+            if (open && items.length) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActive((a) => Math.min(a + 1, items.length - 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((a) => Math.max(a - 1, 0));
+                return;
+              }
+              if (e.key === "Enter" && active >= 0) {
+                e.preventDefault();
+                pick(items[active]);
+                return;
+              }
+              if (e.key === "Escape") {
+                setOpen(false);
+                return;
+              }
+            }
+            if (e.key === "Enter") onEnter?.();
+          }}
+          placeholder={placeholder}
+          className="w-full bg-transparent py-3.5 outline-none text-[15px] placeholder:text-slate-400"
+          aria-label={ariaLabel}
+          autoComplete="off"
+          disabled={disabled}
+        />
+      </label>
+      {open && items.length > 0 && (
+        <ul className="absolute z-30 mt-1 w-full max-h-72 overflow-auto rounded-2xl bg-white border border-slate-200 shadow-xl py-1 text-right">
+          {items.map((m, i) => (
+            <li key={`${m.text}-${i}`}>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(m);
+                }}
+                className={`w-full text-right px-4 py-2.5 text-[14px] transition ${
+                  i === active ? "bg-indigo-50 text-indigo-800" : "hover:bg-slate-50 text-slate-700"
+                }`}
+              >
+                {m.text}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /** האם העיר/רחוב כבר שמורים במטמון המקומי (ואז השאיבה חינם). */
@@ -718,29 +872,27 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
           <div className="mt-7 glass-ios rounded-3xl p-3 sm:p-4">
             <div className="flex flex-col sm:flex-row gap-2.5">
-              <label className="flex-1 flex items-center gap-2 rounded-2xl bg-slate-50 border border-slate-200 px-3.5 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 transition">
-                <MapPin size={18} className="text-indigo-500 shrink-0" />
-                <input
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && runSearch()}
-                  placeholder="עיר — למשל תל אביב"
-                  className="w-full bg-transparent py-3.5 outline-none text-[15px] placeholder:text-slate-400"
-                  aria-label="עיר"
-                />
-              </label>
-              <label className="flex-1 flex items-center gap-2 rounded-2xl bg-slate-50 border border-slate-200 px-3.5 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 transition">
-                <Home size={18} className="text-indigo-500 shrink-0" />
-                <input
-                  value={street}
-                  onChange={(e) => setStreet(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && runSearch()}
-                  placeholder="שכונה / רחוב / מספר — למשל נווה צדק"
-                  className="w-full bg-transparent py-3.5 outline-none text-[15px] placeholder:text-slate-400"
-                  aria-label="שכונה, רחוב או מספר בית"
-                  disabled={!!gushHelka.trim()}
-                />
-              </label>
+              <AddressAutocomplete
+                kind="city"
+                value={city}
+                onChange={setCity}
+                onEnter={() => runSearch()}
+                placeholder="עיר — למשל תל אביב"
+                ariaLabel="עיר"
+                icon={<MapPin size={18} className="text-indigo-500 shrink-0" />}
+              />
+              <AddressAutocomplete
+                kind="street"
+                value={street}
+                onChange={setStreet}
+                onPickCity={(c) => !city.trim() && setCity(c)}
+                cityForStreet={city}
+                onEnter={() => runSearch()}
+                placeholder="שכונה / רחוב / מספר — למשל נווה צדק"
+                ariaLabel="שכונה, רחוב או מספר בית"
+                disabled={!!gushHelka.trim()}
+                icon={<Home size={18} className="text-indigo-500 shrink-0" />}
+              />
               <button
                 onClick={() => runSearch()}
                 disabled={loading}
