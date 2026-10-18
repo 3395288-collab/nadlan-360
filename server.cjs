@@ -115,7 +115,11 @@ var APIFY_BASE = "https://api.apify.com/v2/acts";
 var ACTORS = {
   yad2: "swerve~yad2-scraper",
   madlan: "swerve~madlan-analytics",
-  facebook: "apify~facebook-marketplace-scraper"
+  facebook: "apify~facebook-marketplace-scraper",
+  // עסקאות סגורות של רשות המסים (GovMap). עד יוני 2026 נשאבו ישירות
+  // מהדפדפן, אך govmap הוסיפו reCAPTCHA ל-API והחסימו שאיבה ישירה.
+  // האקטור מריץ דפדפן אמיתי אצל Apify, שם ה-reCAPTCHA נפתר כדין.
+  nadlan: "swerve~nadlan-deals"
 };
 var CITY_EN = {
   "\u05EA\u05DC \u05D0\u05D1\u05D9\u05D1": "Tel Aviv",
@@ -431,6 +435,172 @@ async function fetchFacebook(city, street, maxItems = 140, cacheOnly = false) {
   };
   const inCity = rows.filter((r) => toPrice(r) != null && matchesCity(r));
   return summarize(inCity, "facebook", street, titleOf, toPrice, () => null);
+}
+var NADLAN_ENUM_CITIES = [
+  "\u05D9\u05E8\u05D5\u05E9\u05DC\u05D9\u05DD",
+  "\u05EA\u05DC \u05D0\u05D1\u05D9\u05D1 -\u05D9\u05E4\u05D5",
+  "\u05D7\u05D9\u05E4\u05D4",
+  "\u05E8\u05D0\u05E9\u05D5\u05DF \u05DC\u05E6\u05D9\u05D5\u05DF",
+  "\u05E4\u05EA\u05D7 \u05EA\u05E7\u05D5\u05D5\u05D4",
+  "\u05D0\u05E9\u05D3\u05D5\u05D3",
+  "\u05D1\u05D0\u05E8 \u05E9\u05D1\u05E2",
+  "\u05E0\u05EA\u05E0\u05D9\u05D4",
+  "\u05D7\u05D5\u05DC\u05D5\u05DF",
+  "\u05D1\u05E0\u05D9 \u05D1\u05E8\u05E7",
+  "\u05E8\u05DE\u05EA \u05D2\u05DF",
+  "\u05D1\u05EA \u05D9\u05DD",
+  "\u05E8\u05D7\u05D5\u05D1\u05D5\u05EA",
+  "\u05D0\u05E9\u05E7\u05DC\u05D5\u05DF",
+  "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9",
+  "\u05DB\u05E4\u05E8 \u05E1\u05D1\u05D0",
+  "\u05D4\u05E8\u05E6\u05DC\u05D9\u05D9\u05D4",
+  "\u05DE\u05D5\u05D3\u05D9\u05E2\u05D9\u05DF-\u05DE\u05DB\u05D1\u05D9\u05DD-\u05E8\u05E2\u05D5\u05EA",
+  "\u05D7\u05D3\u05E8\u05D4",
+  "\u05E0\u05E6\u05E8\u05EA",
+  "\u05DC\u05D5\u05D3",
+  "\u05E8\u05E2\u05E0\u05E0\u05D4",
+  "\u05E8\u05DE\u05DC\u05D4",
+  "\u05DE\u05D5\u05D3\u05D9\u05E2\u05D9\u05DF \u05E2\u05D9\u05DC\u05D9\u05EA",
+  "\u05E8\u05D4\u05D8",
+  "\u05D2\u05D1\u05E2\u05EA\u05D9\u05D9\u05DD",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05D0\u05EA\u05D0",
+  "\u05E0\u05D4\u05E8\u05D9\u05D9\u05D4",
+  "\u05D4\u05D5\u05D3 \u05D4\u05E9\u05E8\u05D5\u05DF",
+  "\u05D0\u05D5\u05DD \u05D0\u05DC-\u05E4\u05D7\u05DD",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05D2\u05EA",
+  "\u05D0\u05D9\u05DC\u05EA",
+  "\u05E2\u05DB\u05D5",
+  "\u05D1\u05D9\u05EA\u05E8 \u05E2\u05D9\u05DC\u05D9\u05EA",
+  "\u05E0\u05E1 \u05E6\u05D9\u05D5\u05E0\u05D4",
+  "\u05DB\u05E8\u05DE\u05D9\u05D0\u05DC",
+  "\u05E8\u05DE\u05EA \u05D4\u05E9\u05E8\u05D5\u05DF",
+  "\u05E2\u05E4\u05D5\u05DC\u05D4",
+  "\u05D0\u05DC\u05E2\u05D3",
+  "\u05D8\u05D1\u05E8\u05D9\u05D4",
+  "\u05E8\u05D0\u05E9 \u05D4\u05E2\u05D9\u05DF",
+  "\u05E0\u05E6\u05E8\u05EA \u05E2\u05D9\u05DC\u05D9\u05EA",
+  "\u05D8\u05D9\u05D9\u05D1\u05D4",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05DE\u05D5\u05E6\u05E7\u05D9\u05DF",
+  "\u05E9\u05E4\u05E8\u05E2\u05DD",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05D9\u05DD",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05D1\u05D9\u05D0\u05DC\u05D9\u05E7",
+  "\u05DE\u05E2\u05DC\u05D4 \u05D0\u05D3\u05D5\u05DE\u05D9\u05DD",
+  "\u05D9\u05D1\u05E0\u05D4",
+  "\u05E4\u05E8\u05D3\u05E1 \u05D7\u05E0\u05D4-\u05DB\u05E8\u05DB\u05D5\u05E8",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05D0\u05D5\u05E0\u05D5",
+  "\u05D0\u05D5\u05E8 \u05D9\u05D4\u05D5\u05D3\u05D4",
+  "\u05D3\u05D9\u05DE\u05D5\u05E0\u05D4",
+  "\u05E6\u05E4\u05EA",
+  "\u05D8\u05DE\u05E8\u05D4",
+  "\u05E0\u05EA\u05D9\u05D1\u05D5\u05EA",
+  "\u05D9\u05D4\u05D5\u05D3-\u05DE\u05D5\u05E0\u05D5\u05E1\u05D5\u05DF",
+  "\u05E1\u05D7'\u05E0\u05D9\u05DF",
+  "\u05D1\u05D0\u05E7\u05D4 \u05D0\u05DC-\u05D2\u05E8\u05D1\u05D9\u05D4",
+  "\u05D2\u05D3\u05E8\u05D4",
+  "\u05D0\u05D5\u05E4\u05E7\u05D9\u05DD",
+  "\u05DE\u05D2\u05D3\u05DC \u05D4\u05E2\u05DE\u05E7",
+  "\u05DE\u05D1\u05E9\u05E8\u05EA \u05E6\u05D9\u05D5\u05DF",
+  "\u05E2\u05E8\u05D3",
+  "\u05D2\u05D1\u05E2\u05EA \u05E9\u05DE\u05D5\u05D0\u05DC",
+  "\u05D8\u05D9\u05E8\u05D4",
+  "\u05E2\u05E8\u05E2\u05E8\u05D4",
+  "\u05E0\u05E9\u05E8",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05E9\u05DE\u05D5\u05E0\u05D4",
+  "\u05E2\u05E8\u05D0\u05D1\u05D4",
+  "\u05E9\u05D3\u05E8\u05D5\u05EA",
+  "\u05D6\u05DB\u05E8\u05D5\u05DF \u05D9\u05E2\u05E7\u05D1",
+  "\u05E7\u05E8\u05D9\u05D9\u05EA \u05DE\u05DC\u05D0\u05DB\u05D9",
+  "\u05D2\u05DF \u05D9\u05D1\u05E0\u05D4",
+  "\u05DE\u05E2\u05DC\u05D5\u05EA-\u05EA\u05E8\u05E9\u05D9\u05D7\u05D0",
+  "\u05DE\u05D2\u05D0\u05E8",
+  "\u05DB\u05E4\u05E8 \u05E7\u05D0\u05E1\u05DD",
+  "\u05D9\u05E7\u05E0\u05E2\u05DD \u05E2\u05D9\u05DC\u05D9\u05EA",
+  "\u05E7\u05DC\u05E0\u05E1\u05D5\u05D5\u05D4",
+  "\u05DB\u05E4\u05E8 \u05D9\u05D5\u05E0\u05D4",
+  "\u05DB\u05E4\u05E8 \u05DB\u05E0\u05D0"
+];
+function normCityKey(s) {
+  return String(s || "").replace(/["'`׳״]/g, "").replace(/\s*[-־]\s*/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
+}
+function canonicalCity(city) {
+  const key = normCityKey(city);
+  if (!key) return null;
+  for (const c of NADLAN_ENUM_CITIES) {
+    if (normCityKey(c) === key) return c;
+  }
+  for (const c of NADLAN_ENUM_CITIES) {
+    const ck = normCityKey(c);
+    if (ck.startsWith(key) || key.startsWith(ck.split("-")[0])) {
+      if (ck.replace(/-.*/, "") === key.replace(/-.*/, "")) return c;
+    }
+  }
+  return null;
+}
+function monthsToNadlanRange(months) {
+  if (!months || months <= 0) return "all";
+  if (months <= 3) return "3";
+  if (months <= 6) return "6";
+  if (months <= 12) return "12";
+  if (months <= 60) return "60";
+  return "all";
+}
+function latLngToMercator(lat, lng) {
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln) || la === 0 && ln === 0) return void 0;
+  const x = ln * 2003750834e-2 / 180;
+  let y = Math.log(Math.tan((90 + la) * Math.PI / 360)) / (Math.PI / 180);
+  y = y * 2003750834e-2 / 180;
+  return [x, y];
+}
+function splitAddress(addr) {
+  const s = String(addr ?? "").trim();
+  const m = s.match(/^(.*?)[\s,]+(\d+[א-ת]?)\s*$/);
+  if (m) return { street: m[1].trim(), house: m[2] };
+  return { street: s, house: "" };
+}
+function mapNadlanRow(r, i) {
+  const price = Number(r?.dealAmount) || 0;
+  if (!price) return null;
+  const area = r?.area != null && Number(r.area) > 0 ? Number(r.area) : null;
+  const ppsmRaw = r?.pricePerSqm != null ? Number(r.pricePerSqm) : null;
+  const pricePerSqm = ppsmRaw && ppsmRaw > 0 ? Math.round(ppsmRaw) : area ? Math.round(price / area) : null;
+  const floorNum = r?.floor != null && String(r.floor).match(/-?\d+/) ? parseInt(String(r.floor).match(/-?\d+/)[0], 10) : null;
+  const addr = splitAddress(r?.address);
+  const firstHand = r?.isFirstHand;
+  const saleClass = firstHand === true ? "new" : firstHand === false ? "second" : void 0;
+  return {
+    objectid: Number(r?.assetId) || i + 1,
+    price,
+    date: String(r?.dealDate ?? "").slice(0, 10),
+    sqm: area,
+    pricePerSqm,
+    rooms: r?.rooms != null && !Number.isNaN(Number(r.rooms)) ? Number(r.rooms) : null,
+    floor: floorNum,
+    city: String(r?.cityName ?? ""),
+    neighborhood: String(r?.neighborhoodName ?? ""),
+    street: addr.street || String(r?.address ?? ""),
+    houseNumber: addr.house,
+    propertyType: String(r?.propertyType ?? ""),
+    source: "neighborhood",
+    distanceMeters: 0,
+    saleClass,
+    coord: latLngToMercator(r?.lat, r?.lng),
+    gush: r?.gush != null ? String(r.gush) : void 0,
+    helka: r?.helka != null ? String(r.helka) : void 0,
+    tatHelka: r?.tatHelka != null ? String(r.tatHelka) : void 0
+  };
+}
+async function fetchNadlanDeals(city, monthsBack = 24, maxItems = 120, cacheOnly = false) {
+  const canonical = canonicalCity(city);
+  const input = {
+    dealDateRange: monthsToNadlanRange(monthsBack),
+    maxItems
+  };
+  if (canonical) input.cities = [canonical];
+  else input.customCities = [city.trim()];
+  const rows = await runActor(ACTORS.nadlan, input, 3e5, cacheOnly);
+  return rows.map(mapNadlanRow).filter((d) => d !== null);
 }
 
 // serverAuth.ts
@@ -1278,6 +1448,31 @@ app.get("/api/sources/:source", async (req, res) => {
     }
     console.error(`[sources/${source}]`, error?.message || error);
     res.status(502).json({ error: error?.message || "\u05E9\u05D0\u05D9\u05D1\u05EA \u05D4\u05DE\u05E7\u05D5\u05E8 \u05E0\u05DB\u05E9\u05DC\u05D4" });
+  }
+});
+app.get("/api/deals", async (req, res) => {
+  const city = String(req.query.city || "").trim();
+  const monthsBack = Math.max(0, Number(req.query.months) || 24);
+  const maxItems = Math.min(300, Math.max(10, Number(req.query.maxItems) || 120));
+  const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+  if (!city) {
+    res.status(400).json({ error: "\u05D7\u05E1\u05E8\u05D4 \u05E2\u05D9\u05E8 \u05DC\u05E9\u05DC\u05D9\u05E4\u05EA \u05E2\u05E1\u05E7\u05D0\u05D5\u05EA \u05E1\u05D2\u05D5\u05E8\u05D5\u05EA" });
+    return;
+  }
+  if (!getTokens().length && !cacheOnly) {
+    res.status(503).json({ error: "APIFY_TOKEN \u05DC\u05D0 \u05DE\u05D5\u05D2\u05D3\u05E8 \u05D1\u05E9\u05E8\u05EA" });
+    return;
+  }
+  try {
+    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly);
+    res.json({ source: "nadlan", city, count: deals.length, deals });
+  } catch (error) {
+    if (error instanceof CacheMissError) {
+      res.status(200).json({ source: "nadlan", city, count: 0, deals: [], cacheMiss: true });
+      return;
+    }
+    console.error("[deals]", error?.message || error);
+    res.status(502).json({ error: error?.message || "\u05E9\u05D0\u05D9\u05D1\u05EA \u05E2\u05E1\u05E7\u05D0\u05D5\u05EA \u05E1\u05D2\u05D5\u05E8\u05D5\u05EA \u05E0\u05DB\u05E9\u05DC\u05D4" });
   }
 });
 app.get("/api/health", (req, res) => {
