@@ -130,6 +130,42 @@ function normCity(s: string): string {
 }
 
 /**
+ * מפריד טקסט תוצאה של GovMap ("אדמונד סחייק 11 ירושלים") לשם ועיר, לפי
+ * רשימת הערים הידועה. ה-id של GovMap הוא קוד בלבד (בלי שמות), ולכן הניתוח
+ * נעשה מהטקסט: מחפשים את העיר הארוכה ביותר שהיא סיומת של הטקסט, ומה שלפניה
+ * הוא שם הרחוב/השכונה. מחזיר עיר קנונית מהרשימה (עם "-יפו" וכו').
+ */
+function splitTextByCity(text: string, cities: string[]): { name: string; city: string } {
+  const norm = (s: string) =>
+    (s || "").replace(/["'`׳״]/g, "").replace(/[-־]/g, " ").replace(/\s+/g, " ").trim();
+  const nt = norm(text);
+  let bestCity = "";
+  let bestWords = 0;
+  for (const c of cities) {
+    const nc = norm(c);
+    if (!nc) continue;
+    // התאמה מלאה או סיומת בגבול מילה — וגם הבסיס בלי "יפו" (GovMap כותב "תל אביב").
+    const base = nc.replace(/ יפו$/, "").trim();
+    for (const cand of [nc, base]) {
+      if (cand.length < 2) continue;
+      if (nt === cand || nt.endsWith(" " + cand)) {
+        const w = cand.split(" ").length;
+        if (w > bestWords) {
+          bestWords = w;
+          bestCity = c;
+        }
+      }
+    }
+  }
+  if (bestCity) {
+    const words = text.trim().split(/\s+/);
+    const name = words.slice(0, Math.max(0, words.length - bestWords)).join(" ").trim();
+    return { name: name || text.trim(), city: bestCity };
+  }
+  return { name: text.trim(), city: "" };
+}
+
+/**
  * שדה עם השלמה אוטומטית. kind="city" — רשימת ערים מקומית (אמין);
  * kind="street" — רחובות/כתובות מ-GovMap בדפדפן, ממוקד לעיר שנבחרה.
  * בבחירה מעדכן את השדה בשם הנקי שהמערכת תחפש לפיו.
@@ -138,6 +174,7 @@ function AddressAutocomplete({
   value,
   onChange,
   onPickCity,
+  onPickAddress,
   placeholder,
   icon,
   ariaLabel,
@@ -150,11 +187,12 @@ function AddressAutocomplete({
   value: string;
   onChange: (v: string) => void;
   onPickCity?: (city: string) => void;
+  onPickAddress?: (m: AutocompleteMatch) => void;
   placeholder: string;
   icon: React.ReactNode;
   ariaLabel: string;
   disabled?: boolean;
-  kind: "city" | "street" | "neighborhood";
+  kind: "city" | "street" | "neighborhood" | "address";
   cityForStreet?: string;
   cityList?: string[];
   onEnter?: () => void;
@@ -178,19 +216,46 @@ function AddressAutocomplete({
       return;
     }
 
-    // עיר: השלמה מקומית מהרשימה המלאה (כל יישובי ישראל) — מיידי ואמין.
-    if (kind === "city") {
+    const list = cityList && cityList.length ? cityList : CITY_LIST;
+    const localCityMatches = (limit: number) => {
       const nq = normCity(q);
-      const list = cityList && cityList.length ? cityList : CITY_LIST;
-      const matches = list
+      return list
         .filter((c) => normCity(c).includes(nq))
         .sort((a, b) => Number(normCity(b).startsWith(nq)) - Number(normCity(a).startsWith(nq)))
-        .slice(0, 8)
+        .slice(0, limit)
         .map((c) => ({ text: c, type: "settlement", score: 0, point: null, cityName: c }) as AutocompleteMatch);
+    };
+
+    // עיר בלבד: השלמה מקומית מהרשימה המלאה (כל יישובי ישראל).
+    if (kind === "city") {
+      const matches = localCityMatches(8);
       setItems(matches);
       setOpen(matches.length > 0);
       setActive(-1);
       return;
+    }
+
+    // שורת חיפוש אחת: עיר (מקומי) + רחוב/שכונה/כתובת (GovMap), ממוזגים.
+    if (kind === "address") {
+      const cityMatches = localCityMatches(3);
+      setItems(cityMatches);
+      setOpen(cityMatches.length > 0);
+      setActive(-1);
+      const t = setTimeout(async () => {
+        try {
+          const res = await autocompleteAddress(q);
+          const gm = res
+            .filter((r) => r.type === "street" || r.type === "address" || r.type === "neighborhood")
+            .slice(0, 7);
+          const merged = [...cityMatches, ...gm];
+          setItems(merged);
+          setOpen(merged.length > 0);
+          setActive(-1);
+        } catch {
+          // משאירים את התאמות הערים המקומיות
+        }
+      }, 220);
+      return () => clearTimeout(t);
     }
 
     // רחוב/שכונה: השלמה מ-GovMap בדפדפן, ממוקדת לעיר שנבחרה.
@@ -230,12 +295,16 @@ function AddressAutocomplete({
   function pick(m: AutocompleteMatch) {
     justPicked.current = true;
     if (kind === "city") {
-      const name = m.cityName || m.text;
-      onChange(name);
+      onChange(m.cityName || m.text);
+    } else if (kind === "address") {
+      // שורת חיפוש אחת: ההורה מפרק עיר/שכונה/רחוב ומריץ חיפוש.
+      onChange(m.text);
+      onPickAddress?.(m);
     } else {
-      // רחוב: ממלאים את שם הרחוב הנקי, ואם זוהתה עיר — ממלאים גם אותה.
-      onChange(m.streetName || m.text);
-      if (m.cityName && onPickCity) onPickCity(m.cityName);
+      // רחוב/שכונה: ה-id של GovMap הוא קוד בלבד, ולכן מפרקים מהטקסט.
+      const parsed = splitTextByCity(m.text, cityList && cityList.length ? cityList : CITY_LIST);
+      onChange(parsed.name || m.text);
+      if (parsed.city && onPickCity) onPickCity(parsed.city);
     }
     setOpen(false);
     setItems([]);
@@ -630,6 +699,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [city, setCity] = useState("");
   const [neighborhood, setNeighborhood] = useState("");
   const [street, setStreet] = useState("");
+  // שורת החיפוש המאוחדת (עיר/שכונה/רחוב בשדה אחד) — הטקסט שמוצג בשדה.
+  const [addr, setAddr] = useState("");
   // רשימת כל יישובי ישראל להשלמה אוטומטית מלאה (נטענת פעם אחת, עם גיבוי מובנה).
   const [cityList, setCityList] = useState<string[]>(CITY_LIST);
   useEffect(() => {
@@ -936,41 +1007,70 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           <div className="mt-7 glass-ios rounded-3xl p-3 sm:p-4">
             <div className="flex flex-col sm:flex-row gap-2.5">
               <AddressAutocomplete
-                kind="city"
-                value={city}
-                onChange={setCity}
+                kind="address"
+                value={addr}
+                onChange={(v) => {
+                  setAddr(v);
+                  // כל עוד לא נבחרה הצעה — אין עדיין עיר/רחוב ודאיים.
+                  if (!v.trim()) {
+                    setCity("");
+                    setNeighborhood("");
+                    setStreet("");
+                  }
+                }}
                 cityList={cityList}
-                onEnter={() => runSearch()}
-                placeholder="עיר — למשל תל אביב"
-                ariaLabel="עיר"
-                icon={<MapPin size={18} className="text-indigo-500 shrink-0" />}
-              />
-              <AddressAutocomplete
-                kind="neighborhood"
-                value={neighborhood}
-                onChange={setNeighborhood}
-                onPickCity={(c) => !city.trim() && setCity(c)}
-                cityForStreet={city}
-                onEnter={() => runSearch()}
-                placeholder="שכונה — למשל נווה צדק"
-                ariaLabel="שכונה"
+                onPickAddress={(m) => {
+                  let c = "";
+                  let st = "";
+                  let nb = "";
+                  if (m.type === "settlement") {
+                    c = m.cityName || m.text;
+                  } else {
+                    const parsed = splitTextByCity(m.text, cityList);
+                    c = parsed.city;
+                    if (m.type === "neighborhood") nb = parsed.name;
+                    else st = parsed.name;
+                  }
+                  setCity(c);
+                  setNeighborhood(nb);
+                  setStreet(st);
+                  setAddr(m.text);
+                  runSearch(c, st, dealType, yearsBack, "", customRange ? { from: fromMonth, to: toMonth } : null, false, nb);
+                }}
+                onEnter={() => {
+                  // חיפוש חופשי בלי בחירה: מפרקים את הטקסט לעיר + רחוב.
+                  const parsed = splitTextByCity(addr.trim(), cityList);
+                  if (parsed.city) {
+                    setCity(parsed.city);
+                    setStreet(parsed.name);
+                    setNeighborhood("");
+                    runSearch(parsed.city, parsed.name, dealType, yearsBack, "", customRange ? { from: fromMonth, to: toMonth } : null, false, "");
+                  } else if (addr.trim()) {
+                    setCity(addr.trim());
+                    setStreet("");
+                    setNeighborhood("");
+                    runSearch(addr.trim(), "", dealType, yearsBack, "", customRange ? { from: fromMonth, to: toMonth } : null, false, "");
+                  }
+                }}
+                placeholder="חיפוש — עיר, שכונה או רחוב (למשל: הרצל חיפה / פלורנטין / ירושלים)"
+                ariaLabel="חיפוש עיר, שכונה או רחוב"
                 disabled={!!gushHelka.trim()}
-                icon={<Building2 size={18} className="text-indigo-500 shrink-0" />}
-              />
-              <AddressAutocomplete
-                kind="street"
-                value={street}
-                onChange={setStreet}
-                onPickCity={(c) => !city.trim() && setCity(c)}
-                cityForStreet={city}
-                onEnter={() => runSearch()}
-                placeholder="רחוב ומספר — למשל הרצל 40"
-                ariaLabel="רחוב ומספר בית"
-                disabled={!!gushHelka.trim()}
-                icon={<Home size={18} className="text-indigo-500 shrink-0" />}
+                icon={<Search size={18} className="text-indigo-500 shrink-0" />}
               />
               <button
-                onClick={() => runSearch()}
+                onClick={() => {
+                  // כפתור חיפוש: אם נבחרה כבר כתובת — מחפש לפיה; אחרת מפרק את הטקסט.
+                  if (city.trim() || gushHelka.trim()) {
+                    runSearch();
+                  } else if (addr.trim()) {
+                    const parsed = splitTextByCity(addr.trim(), cityList);
+                    const c = parsed.city || addr.trim();
+                    const st = parsed.city ? parsed.name : "";
+                    setCity(c);
+                    setStreet(st);
+                    runSearch(c, st, dealType, yearsBack, "", customRange ? { from: fromMonth, to: toMonth } : null, false, "");
+                  }
+                }}
                 disabled={loading}
                 className="shrink-0 flex items-center justify-center gap-2 rounded-2xl bg-indigo-600 hover:bg-indigo-700 active:scale-[.98] disabled:opacity-60 text-white font-semibold px-6 py-3.5 transition shadow-lg shadow-indigo-200"
               >
@@ -1142,6 +1242,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                     setCity(ex.city);
                     setNeighborhood("");
                     setStreet(ex.street);
+                    setAddr([ex.street, ex.city].filter(Boolean).join(" "));
                     runSearch(ex.city, ex.street, dealType, yearsBack, "", null, false, "");
                   }}
                   className="text-[13px] rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:text-indigo-700 px-3.5 py-1.5 text-slate-600 transition"
