@@ -101,9 +101,37 @@ function searchesLeft(credit: CreditStatus | null): number | null {
 }
 
 /**
- * שדה עם השלמה אוטומטית של ערים/רחובות מ-GovMap (רץ בדפדפן, חינם).
- * kind="city" מציג יישובים; kind="street" מצרף את העיר לשאילתה ומציג
- * רחובות/כתובות. בבחירה מעדכן את השדה בשם הנקי שהמערכת תחפש לפיו.
+ * רשימת ערים ישראליות להשלמה אוטומטית של שדה העיר. ההשלמה של GovMap חלשה
+ * לערים (למחרוזת חלקית היא מחזירה כתובות ולא יישובים), ולכן העיר מושלמת
+ * מקומית מרשימה זו — מיידי ואמין. אפשר תמיד להקליד עיר חופשית שאינה ברשימה.
+ */
+const CITY_LIST = [
+  "תל אביב-יפו", "ירושלים", "חיפה", "ראשון לציון", "פתח תקווה", "אשדוד",
+  "באר שבע", "נתניה", "חולון", "בני ברק", "רמת גן", "בת ים", "רחובות",
+  "אשקלון", "בית שמש", "כפר סבא", "הרצליה", "מודיעין-מכבים-רעות", "חדרה",
+  "נצרת", "לוד", "רעננה", "רמלה", "מודיעין עילית", "רהט", "גבעתיים",
+  "קריית אתא", "נהריה", "הוד השרון", "אום אל-פחם", "קריית גת", "אילת",
+  "עכו", "ביתר עילית", "נס ציונה", "כרמיאל", "רמת השרון", "עפולה", "אלעד",
+  "טבריה", "ראש העין", "נוף הגליל", "טייבה", "קריית מוצקין", "שפרעם",
+  "קריית ים", "קריית ביאליק", "מעלה אדומים", "יבנה", "פרדס חנה-כרכור",
+  "קריית אונו", "אור יהודה", "דימונה", "צפת", "טמרה", "נתיבות",
+  "יהוד-מונוסון", "סח'נין", "באקה אל-גרביה", "גדרה", "אופקים", "מגדל העמק",
+  "מבשרת ציון", "ערד", "גבעת שמואל", "טירה", "ערערה", "נשר", "קריית שמונה",
+  "עראבה", "שדרות", "זכרון יעקב", "קריית מלאכי", "גן יבנה", "מעלות-תרשיחא",
+  "מגאר", "כפר קאסם", "יקנעם עילית", "קלנסווה", "כפר יונה", "כפר כנא",
+  "אריאל", "גבעת זאב", "אור עקיבא", "יבנאל", "כוכב יאיר", "שוהם",
+  "פרדסייה", "כפר ורדים", "מיתר", "להבים", "עומר", "קצרין", "ראש פינה",
+];
+
+/** נירמול להשוואת ערים: מסיר רווחים סביב מקפים, גרשיים ורווחים כפולים. */
+function normCity(s: string): string {
+  return s.replace(/["'`׳״]/g, "").replace(/\s*[-־]\s*/g, "-").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * שדה עם השלמה אוטומטית. kind="city" — רשימת ערים מקומית (אמין);
+ * kind="street" — רחובות/כתובות מ-GovMap בדפדפן, ממוקד לעיר שנבחרה.
+ * בבחירה מעדכן את השדה בשם הנקי שהמערכת תחפש לפיו.
  */
 function AddressAutocomplete({
   value,
@@ -146,15 +174,26 @@ function AddressAutocomplete({
       setOpen(false);
       return;
     }
+
+    // עיר: השלמה מקומית מהרשימה — מיידי ואמין (GovMap חלש לערים).
+    if (kind === "city") {
+      const nq = normCity(q);
+      const matches = CITY_LIST.filter((c) => normCity(c).includes(nq))
+        .sort((a, b) => Number(normCity(b).startsWith(nq)) - Number(normCity(a).startsWith(nq)))
+        .slice(0, 8)
+        .map((c) => ({ text: c, type: "settlement", score: 0, point: null, cityName: c }) as AutocompleteMatch);
+      setItems(matches);
+      setOpen(matches.length > 0);
+      setActive(-1);
+      return;
+    }
+
+    // רחוב: השלמה מ-GovMap בדפדפן, ממוקדת לעיר שנבחרה.
     const t = setTimeout(async () => {
       try {
-        const searchText =
-          kind === "street" && cityForStreet?.trim() ? `${q} ${cityForStreet.trim()}` : q;
+        const searchText = cityForStreet?.trim() ? `${q} ${cityForStreet.trim()}` : q;
         const res = await autocompleteAddress(searchText);
-        const wanted =
-          kind === "city"
-            ? res.filter((r) => r.type === "settlement" || r.type === "city")
-            : res.filter((r) => r.type === "street" || r.type === "address");
+        const wanted = res.filter((r) => r.type === "street" || r.type === "address");
         const list = (wanted.length ? wanted : res).slice(0, 7);
         setItems(list);
         setOpen(list.length > 0);
