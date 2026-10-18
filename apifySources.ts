@@ -266,9 +266,15 @@ async function runActor(
   pruneCache();
   console.log(`[apify] חויב: ${actor} — ${rows.length} תוצאות`);
 
-  // כתיבה ברקע: אין סיבה להשהות את התשובה למשתמש בשביל שמירה.
+  // כתיבה לאחסון המתמיד. ממתינים לה (best-effort) כדי להבטיח שהתוצאה
+  // תישמר לפני שהשרת עלול להירדם — שאיבה איטית (עד 2.5 דק׳) עלולה שלא
+  // להספיק להשלים כתיבת-רקע לפני שהתהליך מושהה, ואז היינו מחויבים שוב.
   if (isGithubStoreEnabled() && rows.length > 0) {
-    writeToGithub(cacheKey, rows).catch(() => {});
+    try {
+      await writeToGithub(cacheKey, rows);
+    } catch {
+      // כישלון אחסון אינו מפיל בקשה — לכל היותר שאיבה חוזרת בעתיד.
+    }
   }
 
   return rows;

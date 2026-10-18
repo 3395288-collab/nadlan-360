@@ -6,7 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, fetchNadlanDeals, fetchNadlanDealsRaw, CacheMissError, getTokens } from "./apifySources";
-import { isGithubStoreEnabled } from "./githubStore";
+import { isGithubStoreEnabled, writeToGithub, readFromGithub } from "./githubStore";
 import { verifyCredentials, changePassword, currentUser, isUsingDefaultPassword } from "./serverAuth";
 
 // Load environment variables
@@ -955,6 +955,22 @@ app.get("/api/deals", async (req, res) => {
     }
     console.error("[deals]", error?.message || error);
     res.status(502).json({ error: error?.message || "שאיבת עסקאות סגורות נכשלה" });
+  }
+});
+
+/**
+ * בדיקת כתיבה/קריאה לאחסון המתמיד (ללא עלות Apify). מוודא שהטוקן
+ * GITHUB_CACHE_TOKEN אכן מורשה לכתוב לריפו המטמון — אם לא, המטמון לא
+ * שורד אתחולי שרת וכל שאיבה מחויבת מחדש.
+ */
+app.get("/api/store-check", async (_req, res) => {
+  const key = "__store_test__";
+  try {
+    const wrote = await writeToGithub(key, [{ t: Date.now(), note: "store-check" }]);
+    const read = await readFromGithub(key, 3600000);
+    res.json({ enabled: isGithubStoreEnabled(), wrote, readBack: !!read });
+  } catch (error: any) {
+    res.json({ enabled: isGithubStoreEnabled(), error: String(error?.message || error) });
   }
 });
 
