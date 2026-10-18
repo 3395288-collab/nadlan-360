@@ -58,6 +58,10 @@ export interface Deal {
   saleClass?: "new" | "second";
   /** קואורדינטת מרכז העסקה (Web Mercator / ITM) — לצורך מיקום על המפה. */
   coord?: [number, number];
+  /** זיהוי קדסטרלי רשמי (גוש / חלקה / תת-חלקה) מרשות המסים. */
+  gush?: string;
+  helka?: string;
+  tatHelka?: string;
 }
 
 interface PolygonMeta {
@@ -287,14 +291,18 @@ export function parseGushHelka(input: string): { gush: number; helka: number; qu
   return { gush, helka, query: `גוש ${gush} חלקה ${helka}` };
 }
 
-/** מאתר עסקאות רשות המסים סביב גוש/חלקה. רדיוס צר — החלקה היא נקודה מדויקת. */
+/**
+ * מאתר עסקאות רשות המסים לפי גוש/חלקה. האקטור שואב ברמת עיר ומחזיר גוש/חלקה
+ * בכל עסקה, ולכן נדרשת גם עיר — הסינון לגוש/חלקה נעשה על עסקאות אותה עיר.
+ */
 export async function findDealsByGushHelka(
   gushHelka: { gush: number; helka: number; query: string },
   options: FindDealsOptions = {},
 ): Promise<Deal[]> {
   return findRecentDealsForAddress(gushHelka.query, {
-    radius: 200,
     ...options,
+    gush: gushHelka.gush,
+    helka: gushHelka.helka,
   });
 }
 
@@ -313,6 +321,16 @@ export interface FindDealsOptions {
    */
   startDate?: string;
   endDate?: string;
+  /**
+   * העיר לשאיבה דרך אקטור nadlan-deals. השאיבה היא ברמת עיר, ולכן העיר
+   * נדרשת. אם לא סופקה — נגזרת מתוך מחרוזת הכתובת (המילה/ים האחרונות).
+   */
+  city?: string;
+  /** שם הרחוב (ואולי מספר בית) לסינון מדויק אחרי השאיבה ברמת העיר. */
+  street?: string;
+  /** סינון קדסטרלי לפי גוש/חלקה אחרי השאיבה (האקטור שולף ברמת עיר). */
+  gush?: number;
+  helka?: number;
 }
 
 /** מנרמל שם רחוב להשוואת כפילויות: מסיר "רחוב"/"רח׳", פסיקים ורווחים כפולים. */
@@ -352,159 +370,144 @@ function dedupeDeals(deals: Deal[]): Deal[] {
   return out;
 }
 
+/** גוזר שם עיר מתוך מחרוזת כתובת כשלא סופקה עיר במפורש (המילים אחרי המספר). */
+function deriveCityFromAddress(address: string): string {
+  const t = (address || "").trim();
+  if (!t) return "";
+  const afterNum = t.match(/\d+\s+([^\d]+)$/);
+  if (afterNum) return afterNum[1].trim();
+  const words = t.split(/\s+/);
+  return words.length > 1 ? words[words.length - 1] : t;
+}
+
+/** מפריד שם רחוב ומספר בית מקלט הרחוב ("הרצל 40" → {name:"הרצל", house:"40"}). */
+function parseStreetInput(street: string): { name: string; house: string } {
+  const s = (street || "").trim();
+  const m = s.match(/^(.*?)[\s,]+(\d+[א-ת]?)\s*$/);
+  if (m) return { name: normStreetKey(m[1]), house: m[2] };
+  return { name: normStreetKey(s), house: "" };
+}
+
+/** מתרגם חלון חודשים לדלי שהשרת/האקטור תומך בו — מפתח מטמון יציב לכל עיר. */
+function monthsBucket(monthsBack: number): string {
+  if (monthsBack <= 3) return "3";
+  if (monthsBack <= 6) return "6";
+  if (monthsBack <= 12) return "12";
+  if (monthsBack <= 60) return "60";
+  return "all";
+}
+
 /**
- * מוצא עסקאות נדל"ן אמיתיות עבור כתובת (עיר + רחוב).
- * זהו הפונקציה המרכזית: כתובת → קואורדינטות → פוליגונים → עסקאות.
+ * שואב עסקאות סגורות ברמת עיר דרך השרת (אקטור nadlan-deals), עם מטמון
+ * מקומי + גיבוי seed. השאיבה ברמת עיר בכוונה — כך חיפוש חוזר באותה עיר
+ * (גם ברחוב/חדרים/טווח אחרים) מוגש חינם מהמטמון. הסינון העדין נעשה בלקוח.
+ */
+async function fetchCityDeals(city: string, monthsBack: number): Promise<Deal[]> {
+  const cacheKey = `deals_${city.trim()}_${monthsBucket(monthsBack)}`;
+  const cached = readLocalCache<Deal[]>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    // maxItems קבוע (120) כדי לא לפצל את מטמון השרת לפי בקשות שונות.
+    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
+    if (r.ok) {
+      const d = await r.json();
+      if (d && !d.error && Array.isArray(d.deals)) {
+        if (d.deals.length) writeLocalCache(cacheKey, d.deals);
+        return d.deals as Deal[];
+      }
+    }
+  } catch {
+    // ממשיכים ל-seed
+  }
+  // גיבוי seed מ-Git: עסקאות שנשמרו פעם אחת, מוגשות לכל מכשיר בחינם.
+  return (await readSeedCache<Deal[]>(LOCAL_CACHE_PREFIX + cacheKey)) || [];
+}
+
+/**
+ * מוצא עסקאות נדל"ן אמיתיות (מחירי סגירה, רשות המסים) עבור כתובת.
+ *
+ * מאז שגוֹvmap הוסיפו reCAPTCHA ל-API, השאיבה הישירה מהדפדפן נחסמה.
+ * כעת העסקאות נשאבות ברמת עיר דרך השרת (אקטור nadlan-deals שמריץ דפדפן
+ * אמיתי אצל Apify), והסינון לרחוב/חדרים/גוש-חלקה/טווח-תאריכים נעשה כאן.
  */
 export async function findRecentDealsForAddress(
   address: string,
   options: FindDealsOptions = {},
 ): Promise<Deal[]> {
   const yearsBack = options.yearsBack ?? 2;
-  const radius = options.radius ?? 300;
   const maxDeals = options.maxDeals ?? 100;
   const dealType = options.dealType ?? 2;
-  const maxPolygons = options.maxPolygons ?? 12;
 
-  const matches = await autocompleteAddress(address);
-  if (matches.length === 0) {
-    throw new Error(`לא נמצאה כתובת תואמת עבור: ${address}`);
+  const city = (options.city || deriveCityFromAddress(address)).trim();
+  if (!city) {
+    throw new Error(
+      options.gush
+        ? "חיפוש לפי גוש/חלקה דורש גם עיר — הזינו את שם העיר שבה נמצא הגוש."
+        : `לא זוהתה עיר עבור: ${address}. הזינו את שם העיר.`,
+    );
   }
 
-  // רדיוס השאילתה ל-API הוא ביחידות מרקטור (מנופח). הסינון המדויק בהמשך
-  // נעשה במטרים אמיתיים דרך distanceMeters.
-  const apiRadius = Math.round(radius / MERCATOR_TO_METERS);
-
-  // מנסים את 3 ההתאמות הטובות עד שנמצא פוליגונים סמוכים
-  let point: [number, number] | null = null;
-  let polygons: any[] = [];
-  for (const m of matches.slice(0, 3)) {
-    if (!m.point) continue;
-    const found = await getDealsByRadius(m.point, apiRadius);
-    if (found.length) {
-      point = m.point;
-      polygons = found;
-      break;
-    }
+  // חלון התאריכים המדויק לסינון. טווח מותאם גובר על yearsBack.
+  const now = new Date();
+  const toStr = (options.endDate || now.toISOString()).slice(0, 10);
+  let fromStr: string;
+  if (options.startDate) {
+    fromStr = options.startDate.length === 7 ? `${options.startDate}-01` : options.startDate.slice(0, 10);
+  } else {
+    const from = new Date(now);
+    from.setMonth(now.getMonth() - Math.round(yearsBack * 12));
+    fromStr = from.toISOString().slice(0, 10);
   }
-  // הרחבת רדיוס אם לא נמצא
-  if (!polygons.length) {
-    for (const m of matches.slice(0, 3)) {
-      if (!m.point) continue;
-      const found = await getDealsByRadius(m.point, Math.round(600 / MERCATOR_TO_METERS));
-      if (found.length) {
-        point = m.point;
-        polygons = found;
-        break;
-      }
-    }
-  }
-  if (!point) {
-    const first = matches.find((m) => m.point);
-    if (!first?.point) throw new Error("לא התקבלו קואורדינטות עבור הכתובת");
-    point = first.point;
-  }
-
-  // דה-דופ פוליגונים לפי polygon_id, ממוינים לפי מרחק
-  const polyMap = new Map<string, PolygonMeta>();
-  for (const meta of polygons) {
-    const id = meta.polygon_id != null ? String(meta.polygon_id) : null;
-    if (!id) continue;
-    const centroid = shapeCentroid(meta.shape) || point;
-    const dist = distanceMeters(point, centroid);
-    const existing = polyMap.get(id);
-    if (!existing || dist < existing.distance) {
-      polyMap.set(id, { polygon_id: id, distance: dist, raw: meta });
-    }
-  }
-  const polyList = Array.from(polyMap.values())
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, maxPolygons);
-
-  // טווח תאריכים — טווח מותאם (startDate/endDate) גובר על yearsBack.
-  const now = new Date(); // מותר כאן — קוד שרת רץ בזמן אמת
-  const from = new Date(now);
-  // נספר בחודשים ולא בשנים, כדי לתמוך בחצאי שנים (0.5 → 6 חודשים).
-  from.setMonth(now.getMonth() - Math.round(yearsBack * 12));
-  // ה-API עובד ברזולוציית חודש (YYYY-MM); חותכים כל קלט לחודש.
-  const startDate = (options.startDate || from.toISOString()).slice(0, 7);
-  const endDate = (options.endDate || now.toISOString()).slice(0, 7);
-
-  // אילו סוגי עסקה לשלוף: "both" → גם חדש וגם יד שנייה, כל אחד מתויג.
-  const dealTypes: (1 | 2)[] = dealType === "both" ? [1, 2] : [dealType];
-
-  const searchAddr = address.toLowerCase().trim();
-  const seen = new Set<string>();
-  const collected: Deal[] = [];
-
-  for (const poly of polyList) {
-    if (collected.length >= maxDeals) break;
-    // כל פוליגון נשאב פעם אחת לכל סוג עסקה מבוקש. עסקה שייכת לסוג אחד בלבד,
-    // ולכן דה-דופ לפי objectid מונע ספירה כפולה גם כששולפים את שניהם.
-    for (const dt of dealTypes) {
-      if (collected.length >= maxDeals) break;
-      const saleClass: Deal["saleClass"] = dt === 1 ? "new" : "second";
-      try {
-        const streetRaw = await getPolygonDeals("street-deals", poly.polygon_id, {
-          limit: Math.max(1, Math.floor(maxDeals / 2)),
-          dealType: dt,
-          startDate,
-          endDate,
-        });
-        for (const raw of streetRaw) {
-          const key = `${raw.objectid}_${raw.dealDate}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const centroid = parsePoint(raw.shape) || shapeCentroid(raw.shape) || point;
-          const dist = distanceMeters(point, centroid);
-          const street = (raw.streetNameHeb || raw.streetName || "").toLowerCase().trim();
-          const house = String(raw.houseNum || raw.houseNumber || "").trim();
-          const dealAddr = `${street} ${house}`.trim();
-          const sameBuilding = dealAddr.length > 0 && searchAddr.includes(street) && !!house && searchAddr.includes(house);
-          const d = normalizeDeal(raw, sameBuilding ? "same_building" : "street", dist, saleClass, centroid);
-          if (d) collected.push(d);
-        }
-
-        if (collected.length < maxDeals) {
-          const hoodRaw = await getPolygonDeals("neighborhood-deals", poly.polygon_id, {
-            limit: Math.max(1, Math.floor(maxDeals / 4)),
-            dealType: dt,
-            startDate,
-            endDate,
-          });
-          for (const raw of hoodRaw) {
-            const key = `${raw.objectid}_${raw.dealDate}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const centroid = parsePoint(raw.shape) || shapeCentroid(raw.shape) || point;
-            const dist = distanceMeters(point, centroid);
-            const d = normalizeDeal(raw, "neighborhood", dist, saleClass, centroid);
-            if (d) collected.push(d);
-          }
-        }
-      } catch {
-        // דילוג על סוג/פוליגון שנכשל, ממשיכים לבא
-        continue;
-      }
-    }
-  }
-
-  // סינון לפי רדיוס (עסקאות באותו בניין תמיד נכללות)
-  const priorityOf = (s: Deal["source"]) => (s === "same_building" ? 0 : s === "street" ? 1 : 2);
-  const filtered = collected.filter(
-    (d) => d.source === "same_building" || d.distanceMeters <= radius,
+  const monthsBack = Math.max(
+    1,
+    Math.round((now.getTime() - new Date(fromStr).getTime()) / (30 * 24 * 3600 * 1000)),
   );
 
-  // מיון: עדיפות → מרחק → תאריך (חדש קודם)
-  filtered.sort((a, b) => {
+  // שאיבה ברמת עיר (מטמון + seed), ואז סינון מקומי מדויק.
+  const all = await fetchCityDeals(city, monthsBack);
+  if (!all.length) return [];
+
+  // 1) חלון תאריכים (השוואת מחרוזות YYYY-MM-DD בטוחה).
+  let deals = all.filter((d) => d.date && d.date >= fromStr && d.date <= toStr);
+
+  // 2) סוג עסקה. isFirstHand לרוב חסר במקור, ולכן "לא ידוע" נחשב יד שנייה
+  //    (ברירת המחדל) ונכלל; "חדש בלבד" מצמצם למה שסומן במפורש כחדש.
+  if (dealType === 1) deals = deals.filter((d) => d.saleClass === "new");
+  else if (dealType === 2) deals = deals.filter((d) => d.saleClass !== "new");
+
+  // 3) סינון קדסטרלי גוש/חלקה.
+  if (options.gush) {
+    deals = deals.filter((d) => String(d.gush || "") === String(options.gush));
+    if (options.helka) deals = deals.filter((d) => String(d.helka || "") === String(options.helka));
+  }
+
+  // 4) סינון/תיוג רחוב. פחות מ-3 התאמות אינו מדגם — נשארים ברמת עיר.
+  const { name: streetName, house: streetHouse } = parseStreetInput(options.street || "");
+  if (streetName && streetName.length >= 2) {
+    const tagged = deals.map((d) => {
+      const dStreet = normStreetKey(d.street);
+      if (!dStreet) return d;
+      const match = dStreet.includes(streetName) || streetName.includes(dStreet);
+      if (!match) return d;
+      const sameBuilding = !!streetHouse && String(d.houseNumber).trim() === streetHouse;
+      return { ...d, source: (sameBuilding ? "same_building" : "street") as Deal["source"] };
+    });
+    const onStreet = tagged.filter((d) => d.source === "same_building" || d.source === "street");
+    deals = onStreet.length >= 3 ? onStreet : tagged;
+  }
+
+  // מיון: בניין → רחוב → שכונה, ואז תאריך (חדש קודם).
+  const priorityOf = (s: Deal["source"]) => (s === "same_building" ? 0 : s === "street" ? 1 : 2);
+  deals.sort((a, b) => {
     const p = priorityOf(a.source) - priorityOf(b.source);
     if (p !== 0) return p;
-    if (a.distanceMeters !== b.distanceMeters) return a.distanceMeters - b.distanceMeters;
     return (b.date || "").localeCompare(a.date || "");
   });
 
-  // איחוד כפילויות (אותה דירה מפוליגונים שכנים / משני סיווגים ב-"both").
-  return dedupeDeals(filtered).slice(0, maxDeals);
+  // איחוד כפילויות (אותה דירה עשויה לחזור) וחיתוך לתקרה.
+  return dedupeDeals(deals).slice(0, maxDeals);
 }
 
 // ---- סטטיסטיקה ----

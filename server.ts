@@ -5,7 +5,7 @@ import * as xlsx from "xlsx";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, CacheMissError, getTokens } from "./apifySources";
+import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, fetchNadlanDeals, CacheMissError, getTokens } from "./apifySources";
 import { isGithubStoreEnabled } from "./githubStore";
 import { verifyCredentials, changePassword, currentUser, isUsingDefaultPassword } from "./serverAuth";
 
@@ -910,6 +910,45 @@ app.get("/api/sources/:source", async (req, res) => {
     }
     console.error(`[sources/${source}]`, error?.message || error);
     res.status(502).json({ error: error?.message || "שאיבת המקור נכשלה" });
+  }
+});
+
+/**
+ * עסקאות סגורות של רשות המסים (GovMap) דרך אקטור Apify.
+ *
+ * עד יוני 2026 הדפדפן שאב ישירות מ-govmap.gov.il, אך govmap הוסיפו
+ * reCAPTCHA ל-API וחסמו שאיבה ישירה. האקטור מריץ דפדפן אמיתי אצל Apify
+ * (שם ה-reCAPTCHA נפתר כדין), ולכן הקריאה עברה לכאן. התוצאה נשמרת במטמון
+ * ובאחסון המתמיד לשבועיים וחצי — חיפוש חוזר באותה עיר מוגש חינם.
+ *
+ * השאיבה היא ברמת עיר (לשיעור פגיעות מטמון מרבי); הסינון המדויק לרחוב,
+ * לחדרים, לגוש/חלקה ולטווח התאריכים נעשה בצד הלקוח.
+ */
+app.get("/api/deals", async (req, res) => {
+  const city = String(req.query.city || "").trim();
+  const monthsBack = Math.max(0, Number(req.query.months) || 24);
+  const maxItems = Math.min(300, Math.max(10, Number(req.query.maxItems) || 120));
+  const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+
+  if (!city) {
+    res.status(400).json({ error: "חסרה עיר לשליפת עסקאות סגורות" });
+    return;
+  }
+  if (!getTokens().length && !cacheOnly) {
+    res.status(503).json({ error: "APIFY_TOKEN לא מוגדר בשרת" });
+    return;
+  }
+
+  try {
+    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly);
+    res.json({ source: "nadlan", city, count: deals.length, deals });
+  } catch (error: any) {
+    if (error instanceof CacheMissError) {
+      res.status(200).json({ source: "nadlan", city, count: 0, deals: [], cacheMiss: true });
+      return;
+    }
+    console.error("[deals]", error?.message || error);
+    res.status(502).json({ error: error?.message || "שאיבת עסקאות סגורות נכשלה" });
   }
 });
 

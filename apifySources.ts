@@ -16,6 +16,10 @@ const ACTORS = {
   yad2: "swerve~yad2-scraper",
   madlan: "swerve~madlan-analytics",
   facebook: "apify~facebook-marketplace-scraper",
+  // עסקאות סגורות של רשות המסים (GovMap). עד יוני 2026 נשאבו ישירות
+  // מהדפדפן, אך govmap הוסיפו reCAPTCHA ל-API והחסימו שאיבה ישירה.
+  // האקטור מריץ דפדפן אמיתי אצל Apify, שם ה-reCAPTCHA נפתר כדין.
+  nadlan: "swerve~nadlan-deals",
 } as const;
 
 /**
@@ -519,4 +523,169 @@ export async function fetchFacebook(
 
   const inCity = rows.filter((r) => toPrice(r) != null && matchesCity(r));
   return summarize(inCity, "facebook", street, titleOf, toPrice, () => null);
+}
+
+// ---- עסקאות סגורות (רשות המסים / GovMap) דרך אקטור swerve/nadlan-deals ----
+
+/**
+ * רשימת הערים שהאקטור מכיר בתפריט (enum). ערים אלו עוברות בשדה cities
+ * — המסלול שנבדק ומדויק ביותר. כל יישוב אחר מועבר כטקסט חופשי ב-customCities.
+ */
+const NADLAN_ENUM_CITIES = [
+  "ירושלים", "תל אביב -יפו", "חיפה", "ראשון לציון", "פתח תקווה", "אשדוד",
+  "באר שבע", "נתניה", "חולון", "בני ברק", "רמת גן", "בת ים", "רחובות",
+  "אשקלון", "בית שמש", "כפר סבא", "הרצלייה", "מודיעין-מכבים-רעות", "חדרה",
+  "נצרת", "לוד", "רעננה", "רמלה", "מודיעין עילית", "רהט", "גבעתיים",
+  "קריית אתא", "נהרייה", "הוד השרון", "אום אל-פחם", "קריית גת", "אילת",
+  "עכו", "ביתר עילית", "נס ציונה", "כרמיאל", "רמת השרון", "עפולה", "אלעד",
+  "טבריה", "ראש העין", "נצרת עילית", "טייבה", "קריית מוצקין", "שפרעם",
+  "קריית ים", "קריית ביאליק", "מעלה אדומים", "יבנה", "פרדס חנה-כרכור",
+  "קריית אונו", "אור יהודה", "דימונה", "צפת", "טמרה", "נתיבות",
+  "יהוד-מונוסון", "סח'נין", "באקה אל-גרביה", "גדרה", "אופקים", "מגדל העמק",
+  "מבשרת ציון", "ערד", "גבעת שמואל", "טירה", "ערערה", "נשר", "קריית שמונה",
+  "עראבה", "שדרות", "זכרון יעקב", "קריית מלאכי", "גן יבנה", "מעלות-תרשיחא",
+  "מגאר", "כפר קאסם", "יקנעם עילית", "קלנסווה", "כפר יונה", "כפר כנא",
+] as const;
+
+/** מנרמל שם עיר להשוואה: מסיר רווחים סביב מקפים, מאחד רווחים, חותך. */
+function normCityKey(s: string): string {
+  return String(s || "")
+    .replace(/["'`׳״]/g, "")
+    .replace(/\s*[-־]\s*/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** מחזיר את השם הקנוני מהתפריט אם העיר מוכרת, אחרת null (→ טקסט חופשי). */
+function canonicalCity(city: string): string | null {
+  const key = normCityKey(city);
+  if (!key) return null;
+  for (const c of NADLAN_ENUM_CITIES) {
+    if (normCityKey(c) === key) return c;
+  }
+  // "תל אביב" / "תל אביב יפו" → "תל אביב -יפו"; התאמה גמישה לקידומת.
+  for (const c of NADLAN_ENUM_CITIES) {
+    const ck = normCityKey(c);
+    if (ck.startsWith(key) || key.startsWith(ck.split("-")[0])) {
+      if (ck.replace(/-.*/, "") === key.replace(/-.*/, "")) return c;
+    }
+  }
+  return null;
+}
+
+/**
+ * ממפה חלון חודשים לטווח שהאקטור תומך בו (enum). האקטור שולף את הטווח
+ * הכולל, והסינון המדויק לחלון המבוקש נעשה אצלנו — כך אותה עיר באותו דלי
+ * זמן נשמרת פעם אחת במטמון ומשרתת כל גרסאות הסינון בחינם.
+ */
+function monthsToNadlanRange(months: number): "3" | "6" | "12" | "60" | "all" {
+  if (!months || months <= 0) return "all";
+  if (months <= 3) return "3";
+  if (months <= 6) return "6";
+  if (months <= 12) return "12";
+  if (months <= 60) return "60";
+  return "all";
+}
+
+/** WGS84 (lat/lng) → Web Mercator (EPSG:3857), כפי ש-govmap החזיר במקור. */
+function latLngToMercator(lat: unknown, lng: unknown): [number, number] | undefined {
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln) || (la === 0 && ln === 0)) return undefined;
+  const x = (ln * 20037508.34) / 180;
+  let y = Math.log(Math.tan(((90 + la) * Math.PI) / 360)) / (Math.PI / 180);
+  y = (y * 20037508.34) / 180;
+  return [x, y];
+}
+
+/** מפצל "לוי אשכול 86" ל-{ street, house }. */
+function splitAddress(addr: unknown): { street: string; house: string } {
+  const s = String(addr ?? "").trim();
+  const m = s.match(/^(.*?)[\s,]+(\d+[א-ת]?)\s*$/);
+  if (m) return { street: m[1].trim(), house: m[2] };
+  return { street: s, house: "" };
+}
+
+/** עסקה סגורה בפורמט שהלקוח (govmapClient.Deal) מצפה לו. */
+export interface NadlanDeal {
+  objectid: number;
+  price: number;
+  date: string;
+  sqm: number | null;
+  pricePerSqm: number | null;
+  rooms: number | null;
+  floor: number | null;
+  city: string;
+  neighborhood: string;
+  street: string;
+  houseNumber: string;
+  propertyType: string;
+  source: "same_building" | "street" | "neighborhood";
+  distanceMeters: number;
+  saleClass?: "new" | "second";
+  coord?: [number, number];
+  gush?: string;
+  helka?: string;
+  tatHelka?: string;
+}
+
+function mapNadlanRow(r: any, i: number): NadlanDeal | null {
+  const price = Number(r?.dealAmount) || 0;
+  if (!price) return null;
+  const area = r?.area != null && Number(r.area) > 0 ? Number(r.area) : null;
+  const ppsmRaw = r?.pricePerSqm != null ? Number(r.pricePerSqm) : null;
+  const pricePerSqm = ppsmRaw && ppsmRaw > 0 ? Math.round(ppsmRaw) : area ? Math.round(price / area) : null;
+  const floorNum = r?.floor != null && String(r.floor).match(/-?\d+/)
+    ? parseInt(String(r.floor).match(/-?\d+/)![0], 10)
+    : null;
+  const addr = splitAddress(r?.address);
+  const firstHand = r?.isFirstHand;
+  const saleClass = firstHand === true ? "new" : firstHand === false ? "second" : undefined;
+  return {
+    objectid: Number(r?.assetId) || i + 1,
+    price,
+    date: String(r?.dealDate ?? "").slice(0, 10),
+    sqm: area,
+    pricePerSqm,
+    rooms: r?.rooms != null && !Number.isNaN(Number(r.rooms)) ? Number(r.rooms) : null,
+    floor: floorNum,
+    city: String(r?.cityName ?? ""),
+    neighborhood: String(r?.neighborhoodName ?? ""),
+    street: addr.street || String(r?.address ?? ""),
+    houseNumber: addr.house,
+    propertyType: String(r?.propertyType ?? ""),
+    source: "neighborhood",
+    distanceMeters: 0,
+    saleClass,
+    coord: latLngToMercator(r?.lat, r?.lng),
+    gush: r?.gush != null ? String(r.gush) : undefined,
+    helka: r?.helka != null ? String(r.helka) : undefined,
+    tatHelka: r?.tatHelka != null ? String(r.tatHelka) : undefined,
+  };
+}
+
+/**
+ * שואב עסקאות סגורות ברמת עיר. הקלט מכוון לשיעור פגיעות מטמון מרבי:
+ * עיר + דלי-זמן בלבד, בלי רחוב/חדרים/טווח מדויק — הסינון העדין נעשה בלקוח.
+ * כך חיפוש חוזר באותה עיר (גם ברחוב/חדרים אחרים) מוגש חינם מהמטמון.
+ */
+export async function fetchNadlanDeals(
+  city: string,
+  monthsBack = 24,
+  maxItems = 120,
+  cacheOnly = false,
+): Promise<NadlanDeal[]> {
+  const canonical = canonicalCity(city);
+  const input: Record<string, unknown> = {
+    dealDateRange: monthsToNadlanRange(monthsBack),
+    maxItems,
+  };
+  if (canonical) input.cities = [canonical];
+  else input.customCities = [city.trim()];
+
+  const rows = await runActor(ACTORS.nadlan, input, 300000, cacheOnly);
+  return rows
+    .map(mapNadlanRow)
+    .filter((d): d is NadlanDeal => d !== null);
 }

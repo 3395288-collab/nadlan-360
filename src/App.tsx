@@ -594,10 +594,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       const useRange = !!(range && range.from && range.to);
       const result = await findRecentDealsForAddress(q, {
         yearsBack: yb,
-        // גוש/חלקה → רדיוס צר מאוד; כתובת מדויקת → צר; שכונה/עיר → רחב
-        radius: parsedGush ? 200 : /\d/.test(streetClean) ? 250 : streetClean ? 450 : 600,
         maxDeals: 100,
         dealType: dt,
+        // השאיבה ברמת עיר; הסינון לרחוב/גוש-חלקה נעשה בלקוח.
+        city: cityClean,
+        street: streetClean,
+        ...(parsedGush ? { gush: parsedGush.gush, helka: parsedGush.helka } : {}),
         ...(useRange ? { startDate: range!.from, endDate: range!.to } : {}),
       });
       setDeals(result);
