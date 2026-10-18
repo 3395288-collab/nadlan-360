@@ -246,6 +246,9 @@ function AddressAutocomplete({
           const res = await autocompleteAddress(q);
           const gm = res
             .filter((r) => r.type === "street" || r.type === "address" || r.type === "neighborhood")
+            // GovMap מחזיר לעיתים שם עיר באנגלית ("הרצל ASDOD") — מסננים
+            // לעברית בלבד כדי שהתצוגה תהיה עקבית ובת-פענוח מול רשימת הערים.
+            .filter((r) => !/[A-Za-z]/.test(r.text))
             .slice(0, 7);
           const merged = [...cityMatches, ...gm];
           setItems(merged);
