@@ -51,6 +51,7 @@ import {
   seedSource,
   seedMadlan,
   autocompleteAddress,
+  fetchAllCities,
   type AutocompleteMatch,
   type Deal,
   type NeighborhoodScore,
@@ -143,6 +144,7 @@ function AddressAutocomplete({
   disabled,
   kind,
   cityForStreet,
+  cityList,
   onEnter,
 }: {
   value: string;
@@ -154,6 +156,7 @@ function AddressAutocomplete({
   disabled?: boolean;
   kind: "city" | "street";
   cityForStreet?: string;
+  cityList?: string[];
   onEnter?: () => void;
 }) {
   const [items, setItems] = useState<AutocompleteMatch[]>([]);
@@ -175,10 +178,12 @@ function AddressAutocomplete({
       return;
     }
 
-    // עיר: השלמה מקומית מהרשימה — מיידי ואמין (GovMap חלש לערים).
+    // עיר: השלמה מקומית מהרשימה המלאה (כל יישובי ישראל) — מיידי ואמין.
     if (kind === "city") {
       const nq = normCity(q);
-      const matches = CITY_LIST.filter((c) => normCity(c).includes(nq))
+      const list = cityList && cityList.length ? cityList : CITY_LIST;
+      const matches = list
+        .filter((c) => normCity(c).includes(nq))
         .sort((a, b) => Number(normCity(b).startsWith(nq)) - Number(normCity(a).startsWith(nq)))
         .slice(0, 8)
         .map((c) => ({ text: c, type: "settlement", score: 0, point: null, cityName: c }) as AutocompleteMatch);
@@ -203,7 +208,7 @@ function AddressAutocomplete({
       }
     }, 220);
     return () => clearTimeout(t);
-  }, [value, kind, cityForStreet]);
+  }, [value, kind, cityForStreet, cityList]);
 
   // סגירה בלחיצה מחוץ לרכיב.
   useEffect(() => {
@@ -615,7 +620,13 @@ function ChangePasswordCard({ defaultUser, onClose }: { defaultUser: string; onC
 function Dashboard({ onLogout }: { onLogout: () => void }) {
   const { canInstall, install } = useInstallPrompt();
   const [city, setCity] = useState("");
+  const [neighborhood, setNeighborhood] = useState("");
   const [street, setStreet] = useState("");
+  // רשימת כל יישובי ישראל להשלמה אוטומטית מלאה (נטענת פעם אחת, עם גיבוי מובנה).
+  const [cityList, setCityList] = useState<string[]>(CITY_LIST);
+  useEffect(() => {
+    fetchAllCities().then((l) => l.length && setCityList(l)).catch(() => {});
+  }, []);
   // "both"=גם חדש וגם יד שנייה, כל עסקה מתויגת. ברירת מחדל: הכל.
   const [dealType, setDealType] = useState<1 | 2 | "both">("both");
   const [yearsBack, setYearsBack] = useState(0.5); // ברירת מחדל: הקצר ביותר (חצי שנה)
@@ -751,9 +762,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     gh = gushHelka,
     range = customRange ? { from: fromMonth, to: toMonth } : null,
     fresh = false,
+    nb = neighborhood,
   ) {
     const cityClean = c.trim();
     const streetClean = s.trim();
+    const nbClean = nb.trim();
     const gushClean = gh.trim();
     const parsedGush = gushClean ? parseGushHelka(gushClean) : null;
 
@@ -762,13 +775,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       return;
     }
     // גמיש: אפשר למלא רק שדה אחד — עיר, שכונה, רחוב, כתובת מלאה או גוש/חלקה
-    if (!cityClean && !streetClean && !parsedGush) {
+    if (!cityClean && !streetClean && !nbClean && !parsedGush) {
       setError("הזינו לפחות עיר, שכונה, רחוב או גוש/חלקה כדי להתחיל לחפש.");
       return;
     }
 
     // גוש/חלקה הוא איתור קדסטרלי מדויק של רשות המסים — הוא גובר על הכתובת.
-    const q = parsedGush ? parsedGush.query : [streetClean, cityClean].filter(Boolean).join(" ");
+    const q = parsedGush
+      ? parsedGush.query
+      : [streetClean, nbClean, cityClean].filter(Boolean).join(" ");
     setLoading(true);
     setError(null);
     setDeals(null);
@@ -791,8 +806,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         yearsBack: yb,
         maxDeals: 100,
         dealType: dt,
-        // השאיבה ברמת עיר; הסינון לרחוב/גוש-חלקה נעשה בלקוח.
+        // השאיבה ממוקדת-אזור (שכונה); הסינון לרחוב/גוש-חלקה נעשה בלקוח.
         city: cityClean,
+        neighborhood: nbClean,
         street: streetClean,
         forceFresh: fresh,
         ...(parsedGush ? { gush: parsedGush.gush, helka: parsedGush.helka } : {}),
@@ -915,10 +931,23 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 kind="city"
                 value={city}
                 onChange={setCity}
+                cityList={cityList}
                 onEnter={() => runSearch()}
                 placeholder="עיר — למשל תל אביב"
                 ariaLabel="עיר"
                 icon={<MapPin size={18} className="text-indigo-500 shrink-0" />}
+              />
+              <AddressAutocomplete
+                kind="street"
+                value={neighborhood}
+                onChange={setNeighborhood}
+                onPickCity={(c) => !city.trim() && setCity(c)}
+                cityForStreet={city}
+                onEnter={() => runSearch()}
+                placeholder="שכונה — למשל נווה צדק"
+                ariaLabel="שכונה"
+                disabled={!!gushHelka.trim()}
+                icon={<Building2 size={18} className="text-indigo-500 shrink-0" />}
               />
               <AddressAutocomplete
                 kind="street"
@@ -927,8 +956,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onPickCity={(c) => !city.trim() && setCity(c)}
                 cityForStreet={city}
                 onEnter={() => runSearch()}
-                placeholder="שכונה / רחוב / מספר — למשל נווה צדק"
-                ariaLabel="שכונה, רחוב או מספר בית"
+                placeholder="רחוב ומספר — למשל הרצל 40"
+                ariaLabel="רחוב ומספר בית"
                 disabled={!!gushHelka.trim()}
                 icon={<Home size={18} className="text-indigo-500 shrink-0" />}
               />
@@ -993,7 +1022,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     setYearsBack(v);
-                    if (city.trim() || street.trim() || gushHelka.trim()) runSearch(city, street, dealType, v);
+                    if (city.trim() || street.trim() || neighborhood.trim() || gushHelka.trim()) runSearch(city, street, dealType, v);
                   }}
                   className="w-full bg-transparent py-3.5 outline-none text-[15px] cursor-pointer"
                   aria-label="טווח זמן לחיפוש"
@@ -1070,7 +1099,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   key={String(opt.v)}
                   onClick={() => {
                     setDealType(opt.v);
-                    if (city.trim() || street.trim() || gushHelka.trim()) runSearch(city, street, opt.v);
+                    if (city.trim() || street.trim() || neighborhood.trim() || gushHelka.trim()) runSearch(city, street, opt.v);
                   }}
                   className={`px-4 py-1.5 rounded-xl text-[13px] font-medium transition ${
                     dealType === opt.v ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
@@ -1103,8 +1132,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   key={ex.city + ex.street}
                   onClick={() => {
                     setCity(ex.city);
+                    setNeighborhood("");
                     setStreet(ex.street);
-                    runSearch(ex.city, ex.street);
+                    runSearch(ex.city, ex.street, dealType, yearsBack, "", null, false, "");
                   }}
                   className="text-[13px] rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:text-indigo-700 px-3.5 py-1.5 text-slate-600 transition"
                 >

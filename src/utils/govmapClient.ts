@@ -207,6 +207,51 @@ function parseAutoId(id: unknown, type: string): { streetName?: string; cityName
   return { cityName: parts[parts.length - 1] || undefined };
 }
 
+/**
+ * רשימת כל היישובים בישראל (data.gov.il, ~1,316, מתעדכן) — להשלמה אוטומטית
+ * מלאה של שדה העיר, כך שלא חסר אף יישוב. נשמר ב-localStorage ל-30 יום.
+ * נכשל בשקט → המשתמש נופל לרשימה המקומית המובנית.
+ */
+const CITY_LIST_RESOURCE = "5c78e9fa-c2e2-4771-93ff-7f400a12f7ba";
+const CITY_LIST_KEY = "nadlan360_all_cities";
+const CITY_LIST_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let allCitiesPromise: Promise<string[]> | null = null;
+
+export async function fetchAllCities(): Promise<string[]> {
+  try {
+    const raw = localStorage.getItem(CITY_LIST_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && Array.isArray(p.list) && p.list.length && Date.now() - p.at < CITY_LIST_TTL_MS) {
+        return p.list as string[];
+      }
+    }
+  } catch {}
+  if (!allCitiesPromise) {
+    allCitiesPromise = (async () => {
+      try {
+        const url = `https://data.gov.il/api/3/action/datastore_search?resource_id=${CITY_LIST_RESOURCE}&limit=1500`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!r.ok) return [];
+        const d = await r.json();
+        const recs: any[] = d?.result?.records || [];
+        const names = [
+          ...new Set(recs.map((x) => String(x["שם_ישוב"] || "").trim()).filter(Boolean)),
+        ].sort((a, b) => a.localeCompare(b, "he"));
+        if (names.length) {
+          try {
+            localStorage.setItem(CITY_LIST_KEY, JSON.stringify({ at: Date.now(), list: names }));
+          } catch {}
+        }
+        return names;
+      } catch {
+        return [];
+      }
+    })();
+  }
+  return allCitiesPromise;
+}
+
 /** ממיר טקסט כתובת חופשי לרשימת התאמות עם קואורדינטות ITM. */
 export async function autocompleteAddress(searchText: string): Promise<AutocompleteMatch[]> {
   const url = `${BASE_URL}/search-service/autocomplete`;
@@ -355,8 +400,10 @@ export interface FindDealsOptions {
    * נדרשת. אם לא סופקה — נגזרת מתוך מחרוזת הכתובת (המילה/ים האחרונות).
    */
   city?: string;
-  /** שם הרחוב (ואולי מספר בית) לסינון מדויק אחרי השאיבה ברמת העיר. */
+  /** שם הרחוב (ואולי מספר בית) לסינון מדויק אחרי השאיבה. */
   street?: string;
+  /** שכונה — ממקדת את שאיבת האקטור לאזור (עדיף על הרחוב למיקוד). */
+  neighborhood?: string;
   /** סינון קדסטרלי לפי גוש/חלקה אחרי השאיבה (האקטור שולף ברמת עיר). */
   gush?: number;
   helka?: number;
@@ -507,9 +554,10 @@ export async function findRecentDealsForAddress(
     Math.round((now.getTime() - new Date(fromStr).getTime()) / (30 * 24 * 3600 * 1000)),
   );
 
-  // האזור למיקוד השאיבה: שם הרחוב/השכונה ללא מספר בית (בעברית מקורית).
-  // בלעדיו שאיבת "עיר" מחזירה שכונה אקראית אחת ולא את המקום המבוקש.
-  const areaText = (options.street || "").replace(/[\s,]+\d+[א-ת]?\s*$/, "").trim();
+  // האזור למיקוד השאיבה: השכונה עדיפה (מדייקת את האזור), ואם אין —
+  // שם הרחוב ללא מספר בית. בלעדיו שאיבת "עיר" מחזירה שכונה אקראית אחת.
+  const streetArea = (options.street || "").replace(/[\s,]+\d+[א-ת]?\s*$/, "").trim();
+  const areaText = (options.neighborhood || "").trim() || streetArea;
 
   // שאיבה ממוקדת-אזור (מטמון + seed), ואז סינון מקומי מדויק.
   let all = await fetchCityDeals(city, monthsBack, options.forceFresh, areaText);
