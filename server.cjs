@@ -60,6 +60,41 @@ async function ghFetch(path3, init = {}, timeoutMs = 12e3) {
     signal: AbortSignal.timeout(timeoutMs)
   });
 }
+async function storeDiagnostic() {
+  const cfg = config();
+  if (!cfg) return { enabled: false };
+  const path3 = pathFor("__store_test__");
+  try {
+    let sha;
+    const head = await ghFetch(`${path3}?ref=${encodeURIComponent(cfg.branch)}`);
+    if (head.ok) sha = (await head.json())?.sha;
+    const res = await ghFetch(
+      path3,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          message: "store-check",
+          content: Buffer.from(JSON.stringify({ at: Date.now() }), "utf8").toString("base64"),
+          branch: cfg.branch,
+          ...sha ? { sha } : {}
+        })
+      },
+      2e4
+    );
+    const body = await res.text().catch(() => "");
+    return {
+      enabled: true,
+      repo: cfg.repo,
+      branch: cfg.branch,
+      headStatus: head.status,
+      writeStatus: res.status,
+      ok: res.ok,
+      message: body.slice(0, 300)
+    };
+  } catch (error) {
+    return { enabled: true, repo: cfg.repo, branch: cfg.branch, error: String(error?.message || error) };
+  }
+}
 async function readFromGithub(key, maxAgeMs) {
   const cfg = config();
   if (!cfg) return null;
@@ -179,7 +214,7 @@ function median(nums) {
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 }
-var CACHE_TTL_MS = 420 * 60 * 60 * 1e3;
+var CACHE_TTL_MS = 336 * 60 * 60 * 1e3;
 var MAX_CACHE_ENTRIES = 300;
 var resultCache = /* @__PURE__ */ new Map();
 function pruneCache() {
@@ -233,23 +268,25 @@ function isQuotaError(status, body) {
   if (status === 402 || status === 403) return true;
   return /usage|limit|exceeded|quota|payment|insufficient/i.test(body);
 }
-async function runActor(actor, input, timeoutMs = 24e4, cacheOnly = false) {
+async function runActor(actor, input, timeoutMs = 24e4, cacheOnly = false, forceFresh = false) {
   const allTokens = getTokens();
   if (!allTokens.length && !cacheOnly) throw new Error("\u05D0\u05D9\u05DF \u05D8\u05D5\u05E7\u05DF Apify \u05DE\u05D5\u05D2\u05D3\u05E8 (APIFY_TOKEN)");
   const cacheKey = `${actor}|${JSON.stringify(input)}`;
-  const cached2 = resultCache.get(cacheKey);
-  if (cached2 && Date.now() - cached2.at < CACHE_TTL_MS) {
-    const ageMin = Math.round((Date.now() - cached2.at) / 6e4);
-    console.log(`[apify] \u05DE\u05D8\u05DE\u05D5\u05DF: ${actor} (\u05D2\u05D9\u05DC ${ageMin} \u05D3\u05E7\u05F3) \u2014 \u05DC\u05D0 \u05D7\u05D5\u05D9\u05D1`);
-    return cached2.rows;
-  }
-  if (isGithubStoreEnabled()) {
-    const stored = await readFromGithub(cacheKey, CACHE_TTL_MS);
-    if (stored) {
-      resultCache.set(cacheKey, { at: stored.at, rows: stored.rows });
-      const ageH = Math.round((Date.now() - stored.at) / 36e5);
-      console.log(`[apify] \u05D0\u05D7\u05E1\u05D5\u05DF \u05DE\u05EA\u05DE\u05D9\u05D3: ${actor} (\u05D2\u05D9\u05DC ${ageH} \u05E9\u05F3) \u2014 \u05DC\u05D0 \u05D7\u05D5\u05D9\u05D1`);
-      return stored.rows;
+  if (!forceFresh) {
+    const cached2 = resultCache.get(cacheKey);
+    if (cached2 && Date.now() - cached2.at < CACHE_TTL_MS) {
+      const ageMin = Math.round((Date.now() - cached2.at) / 6e4);
+      console.log(`[apify] \u05DE\u05D8\u05DE\u05D5\u05DF: ${actor} (\u05D2\u05D9\u05DC ${ageMin} \u05D3\u05E7\u05F3) \u2014 \u05DC\u05D0 \u05D7\u05D5\u05D9\u05D1`);
+      return cached2.rows;
+    }
+    if (isGithubStoreEnabled()) {
+      const stored = await readFromGithub(cacheKey, CACHE_TTL_MS);
+      if (stored) {
+        resultCache.set(cacheKey, { at: stored.at, rows: stored.rows });
+        const ageH = Math.round((Date.now() - stored.at) / 36e5);
+        console.log(`[apify] \u05D0\u05D7\u05E1\u05D5\u05DF \u05DE\u05EA\u05DE\u05D9\u05D3: ${actor} (\u05D2\u05D9\u05DC ${ageH} \u05E9\u05F3) \u2014 \u05DC\u05D0 \u05D7\u05D5\u05D9\u05D1`);
+        return stored.rows;
+      }
     }
   }
   if (cacheOnly) throw new CacheMissError(actor);
@@ -302,8 +339,10 @@ async function runActor(actor, input, timeoutMs = 24e4, cacheOnly = false) {
   pruneCache();
   console.log(`[apify] \u05D7\u05D5\u05D9\u05D1: ${actor} \u2014 ${rows.length} \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA`);
   if (isGithubStoreEnabled() && rows.length > 0) {
-    writeToGithub(cacheKey, rows).catch(() => {
-    });
+    try {
+      await writeToGithub(cacheKey, rows);
+    } catch {
+    }
   }
   return rows;
 }
@@ -352,31 +391,33 @@ function summarize(rows, source, street, getStreet, getPrice, getSqm) {
     listings
   };
 }
-async function fetchYad2(city, street, maxItems = 120, cacheOnly = false) {
+async function fetchYad2(city, street, maxItems = 120, cacheOnly = false, forceFresh = false) {
   const rows = await runActor(
     ACTORS.yad2,
     { city: toEnglishCity(city), dealType: "buy", maxItems },
     24e4,
-    cacheOnly
+    cacheOnly,
+    forceFresh
   );
   return summarize(rows, "yad2", street, (r) => r.streetName || r.address, (r) => r.price, (r) => r.areaSqm);
 }
-async function fetchYad1(city, street, maxItems = 120, cacheOnly = false) {
+async function fetchYad1(city, street, maxItems = 120, cacheOnly = false, forceFresh = false) {
   const rows = await runActor(
     ACTORS.yad2,
     { city: toEnglishCity(city), dealType: "buy", maxItems },
     24e4,
-    cacheOnly
+    cacheOnly,
+    forceFresh
   );
   const fromDeveloper = rows.filter(
     (r) => r.adType === "project" || r.adType === "agency" || r.hasAgent === true
   );
   return summarize(fromDeveloper, "yad1", street, (r) => r.streetName || r.address, (r) => r.price, (r) => r.areaSqm);
 }
-async function fetchMadlan(city, neighbourhood, cacheOnly = false) {
+async function fetchMadlan(city, neighbourhood, cacheOnly = false, forceFresh = false) {
   const input = { city: toEnglishCity(city), dataTypes: ["all"] };
   if (neighbourhood) input.neighbourhood = neighbourhood;
-  const rows = await runActor(ACTORS.madlan, input, 24e4, cacheOnly);
+  const rows = await runActor(ACTORS.madlan, input, 24e4, cacheOnly, forceFresh);
   const d = rows[0] || {};
   const byRooms = Array.isArray(d.pricesByRooms) ? d.pricesByRooms : [];
   const withBoth = byRooms.filter((r) => r.medianBuyPrice > 0 && r.previousBuyPrice > 0);
@@ -399,7 +440,7 @@ async function fetchMadlan(city, neighbourhood, cacheOnly = false) {
     yearlyChangePct
   };
 }
-async function fetchFacebook(city, street, maxItems = 140, cacheOnly = false) {
+async function fetchFacebook(city, street, maxItems = 140, cacheOnly = false, forceFresh = false) {
   const rows = await runActor(
     ACTORS.facebook,
     {
@@ -407,7 +448,8 @@ async function fetchFacebook(city, street, maxItems = 140, cacheOnly = false) {
       resultsLimit: maxItems
     },
     24e4,
-    cacheOnly
+    cacheOnly,
+    forceFresh
   );
   const HOME_WORDS = /דירה|דירת|פנטהאוז|פנטהאוס|קוטג|וילה|בית פרטי|יחידת דיור|נכס|חדרים|חד['׳]/;
   const MIN_HOME_PRICE = 5e5;
@@ -553,6 +595,32 @@ function latLngToMercator(lat, lng) {
   y = y * 2003750834e-2 / 180;
   return [x, y];
 }
+function extractCoord(r) {
+  let la = r?.lat ?? r?.latitude ?? r?.Lat ?? r?.y ?? null;
+  let ln = r?.lng ?? r?.lon ?? r?.long ?? r?.longitude ?? r?.Lng ?? r?.x ?? null;
+  if ((la == null || ln == null) && r?.location && typeof r.location === "object") {
+    la = r.location.lat ?? r.location.latitude ?? la;
+    ln = r.location.lng ?? r.location.lon ?? r.location.longitude ?? ln;
+  }
+  if ((la == null || ln == null) && Array.isArray(r?.coordinates) && r.coordinates.length >= 2) {
+    ln = r.coordinates[0];
+    la = r.coordinates[1];
+  }
+  if (la != null && ln != null) {
+    const laN = Number(la);
+    if (Number.isFinite(laN) && Math.abs(laN) <= 90) return latLngToMercator(la, ln);
+    const lnN = Number(ln);
+    if (Number.isFinite(laN) && Number.isFinite(lnN)) return [lnN, laN];
+  }
+  const wkt = r?.shape || r?.geometry || r?.wkt;
+  if (typeof wkt === "string" && wkt.startsWith("POINT(")) {
+    const n = wkt.slice(6, -1).trim().split(/\s+/).map(Number);
+    if (n.length === 2 && n.every(Number.isFinite)) {
+      return Math.abs(n[1]) <= 90 ? latLngToMercator(n[1], n[0]) : [n[0], n[1]];
+    }
+  }
+  return void 0;
+}
 function splitAddress(addr) {
   const s = String(addr ?? "").trim();
   const m = s.match(/^(.*?)[\s,]+(\d+[א-ת]?)\s*$/);
@@ -585,13 +653,13 @@ function mapNadlanRow(r, i) {
     source: "neighborhood",
     distanceMeters: 0,
     saleClass,
-    coord: latLngToMercator(r?.lat, r?.lng),
+    coord: extractCoord(r),
     gush: r?.gush != null ? String(r.gush) : void 0,
     helka: r?.helka != null ? String(r.helka) : void 0,
     tatHelka: r?.tatHelka != null ? String(r.tatHelka) : void 0
   };
 }
-async function fetchNadlanDeals(city, monthsBack = 24, maxItems = 120, cacheOnly = false) {
+async function fetchNadlanDealsRaw(city, monthsBack = 24, maxItems = 120, cacheOnly = false, forceFresh = false, neighborhood = "") {
   const canonical = canonicalCity(city);
   const input = {
     dealDateRange: monthsToNadlanRange(monthsBack),
@@ -599,7 +667,11 @@ async function fetchNadlanDeals(city, monthsBack = 24, maxItems = 120, cacheOnly
   };
   if (canonical) input.cities = [canonical];
   else input.customCities = [city.trim()];
-  const rows = await runActor(ACTORS.nadlan, input, 3e5, cacheOnly);
+  if (neighborhood && neighborhood.trim()) input.neighborhoods = [neighborhood.trim()];
+  return runActor(ACTORS.nadlan, input, 3e5, cacheOnly, forceFresh);
+}
+async function fetchNadlanDeals(city, monthsBack = 24, maxItems = 120, cacheOnly = false, forceFresh = false, neighborhood = "") {
+  const rows = await fetchNadlanDealsRaw(city, monthsBack, maxItems, cacheOnly, forceFresh, neighborhood);
   return rows.map(mapNadlanRow).filter((d) => d !== null);
 }
 
@@ -1415,6 +1487,7 @@ app.get("/api/sources/:source", async (req, res) => {
   const street = String(req.query.street || "").trim();
   const neighbourhood = String(req.query.neighbourhood || "").trim();
   const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+  const forceFresh = req.query.fresh === "1" || req.query.fresh === "true";
   if (!city) {
     res.status(400).json({ error: "\u05D7\u05E1\u05E8\u05D4 \u05E2\u05D9\u05E8" });
     return;
@@ -1426,16 +1499,16 @@ app.get("/api/sources/:source", async (req, res) => {
   try {
     switch (source) {
       case "yad2":
-        res.json(await fetchYad2(city, street, 120, cacheOnly));
+        res.json(await fetchYad2(city, street, 120, cacheOnly, forceFresh));
         return;
       case "yad1":
-        res.json(await fetchYad1(city, street, 120, cacheOnly));
+        res.json(await fetchYad1(city, street, 120, cacheOnly, forceFresh));
         return;
       case "madlan":
-        res.json(await fetchMadlan(city, neighbourhood || void 0, cacheOnly));
+        res.json(await fetchMadlan(city, neighbourhood || void 0, cacheOnly, forceFresh));
         return;
       case "facebook":
-        res.json(await fetchFacebook(city, street, 140, cacheOnly));
+        res.json(await fetchFacebook(city, street, 140, cacheOnly, forceFresh));
         return;
       default:
         res.status(404).json({ error: `\u05DE\u05E7\u05D5\u05E8 \u05DC\u05D0 \u05DE\u05D5\u05DB\u05E8: ${source}` });
@@ -1452,9 +1525,11 @@ app.get("/api/sources/:source", async (req, res) => {
 });
 app.get("/api/deals", async (req, res) => {
   const city = String(req.query.city || "").trim();
+  const area = String(req.query.area || "").trim();
   const monthsBack = Math.max(0, Number(req.query.months) || 24);
-  const maxItems = Math.min(300, Math.max(10, Number(req.query.maxItems) || 120));
+  const maxItems = Math.min(400, Math.max(10, Number(req.query.maxItems) || 120));
   const cacheOnly = req.query.cacheOnly === "1" || req.query.cacheOnly === "true";
+  const forceFresh = req.query.fresh === "1" || req.query.fresh === "true";
   if (!city) {
     res.status(400).json({ error: "\u05D7\u05E1\u05E8\u05D4 \u05E2\u05D9\u05E8 \u05DC\u05E9\u05DC\u05D9\u05E4\u05EA \u05E2\u05E1\u05E7\u05D0\u05D5\u05EA \u05E1\u05D2\u05D5\u05E8\u05D5\u05EA" });
     return;
@@ -1464,8 +1539,13 @@ app.get("/api/deals", async (req, res) => {
     return;
   }
   try {
-    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly);
-    res.json({ source: "nadlan", city, count: deals.length, deals });
+    if (req.query.raw === "1") {
+      const raw = await fetchNadlanDealsRaw(city, monthsBack, maxItems, true, false, area);
+      res.json({ source: "nadlan-raw", city, area, count: raw.length, sampleKeys: raw[0] ? Object.keys(raw[0]) : [], sample: raw.slice(0, 2) });
+      return;
+    }
+    const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly, forceFresh, area);
+    res.json({ source: "nadlan", city, area, count: deals.length, deals });
   } catch (error) {
     if (error instanceof CacheMissError) {
       res.status(200).json({ source: "nadlan", city, count: 0, deals: [], cacheMiss: true });
@@ -1473,6 +1553,13 @@ app.get("/api/deals", async (req, res) => {
     }
     console.error("[deals]", error?.message || error);
     res.status(502).json({ error: error?.message || "\u05E9\u05D0\u05D9\u05D1\u05EA \u05E2\u05E1\u05E7\u05D0\u05D5\u05EA \u05E1\u05D2\u05D5\u05E8\u05D5\u05EA \u05E0\u05DB\u05E9\u05DC\u05D4" });
+  }
+});
+app.get("/api/store-check", async (_req, res) => {
+  try {
+    res.json(await storeDiagnostic());
+  } catch (error) {
+    res.json({ enabled: isGithubStoreEnabled(), error: String(error?.message || error) });
   }
 });
 app.get("/api/health", (req, res) => {
