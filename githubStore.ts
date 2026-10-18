@@ -54,6 +54,47 @@ export interface StoredEntry {
   rows: any[];
 }
 
+/**
+ * אבחון כתיבה: מנסה כתיבה אמיתית לאחסון ומחזיר את סטטוס ה-HTTP המדויק,
+ * כדי לאבחן למה המטמון המתמיד אינו נשמר (401=טוקן שגוי/פג · 403=חסרה
+ * הרשאת Contents:write · 404=אין גישה לריפו). ללא עלות Apify.
+ */
+export async function storeDiagnostic(): Promise<any> {
+  const cfg = config();
+  if (!cfg) return { enabled: false };
+  const path = pathFor("__store_test__");
+  try {
+    let sha: string | undefined;
+    const head = await ghFetch(`${path}?ref=${encodeURIComponent(cfg.branch)}`);
+    if (head.ok) sha = (await head.json())?.sha;
+    const res = await ghFetch(
+      path,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          message: "store-check",
+          content: Buffer.from(JSON.stringify({ at: Date.now() }), "utf8").toString("base64"),
+          branch: cfg.branch,
+          ...(sha ? { sha } : {}),
+        }),
+      },
+      20000,
+    );
+    const body = await res.text().catch(() => "");
+    return {
+      enabled: true,
+      repo: cfg.repo,
+      branch: cfg.branch,
+      headStatus: head.status,
+      writeStatus: res.status,
+      ok: res.ok,
+      message: body.slice(0, 300),
+    };
+  } catch (error: any) {
+    return { enabled: true, repo: cfg.repo, branch: cfg.branch, error: String(error?.message || error) };
+  }
+}
+
 /** קורא רשומה שמורה. מחזיר null כשאין, כשפג תוקפה, או בכל תקלה. */
 export async function readFromGithub(key: string, maxAgeMs: number): Promise<StoredEntry | null> {
   const cfg = config();

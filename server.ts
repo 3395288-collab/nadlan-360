@@ -6,7 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, fetchNadlanDeals, fetchNadlanDealsRaw, CacheMissError, getTokens } from "./apifySources";
-import { isGithubStoreEnabled, writeToGithub, readFromGithub } from "./githubStore";
+import { isGithubStoreEnabled, writeToGithub, readFromGithub, storeDiagnostic } from "./githubStore";
 import { verifyCredentials, changePassword, currentUser, isUsingDefaultPassword } from "./serverAuth";
 
 // Load environment variables
@@ -964,11 +964,8 @@ app.get("/api/deals", async (req, res) => {
  * שורד אתחולי שרת וכל שאיבה מחויבת מחדש.
  */
 app.get("/api/store-check", async (_req, res) => {
-  const key = "__store_test__";
   try {
-    const wrote = await writeToGithub(key, [{ t: Date.now(), note: "store-check" }]);
-    const read = await readFromGithub(key, 3600000);
-    res.json({ enabled: isGithubStoreEnabled(), wrote, readBack: !!read });
+    res.json(await storeDiagnostic());
   } catch (error: any) {
     res.json({ enabled: isGithubStoreEnabled(), error: String(error?.message || error) });
   }
