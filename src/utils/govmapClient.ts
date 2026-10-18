@@ -512,7 +512,12 @@ export async function findRecentDealsForAddress(
   const areaText = (options.street || "").replace(/[\s,]+\d+[א-ת]?\s*$/, "").trim();
 
   // שאיבה ממוקדת-אזור (מטמון + seed), ואז סינון מקומי מדויק.
-  const all = await fetchCityDeals(city, monthsBack, options.forceFresh, areaText);
+  let all = await fetchCityDeals(city, monthsBack, options.forceFresh, areaText);
+  // רשת ביטחון: אם מיקוד האזור לא החזיר כלום (למשל שם רחוב שהאקטור לא זיהה),
+  // נופלים לשאיבה ברמת עיר כדי שלא יישאר מסך ריק.
+  if (!all.length && areaText) {
+    all = await fetchCityDeals(city, monthsBack, options.forceFresh, "");
+  }
   if (!all.length) return [];
 
   // 1) חלון תאריכים (השוואת מחרוזות YYYY-MM-DD בטוחה).
