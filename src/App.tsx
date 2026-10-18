@@ -154,7 +154,7 @@ function AddressAutocomplete({
   icon: React.ReactNode;
   ariaLabel: string;
   disabled?: boolean;
-  kind: "city" | "street";
+  kind: "city" | "street" | "neighborhood";
   cityForStreet?: string;
   cityList?: string[];
   onEnter?: () => void;
@@ -193,13 +193,21 @@ function AddressAutocomplete({
       return;
     }
 
-    // רחוב: השלמה מ-GovMap בדפדפן, ממוקדת לעיר שנבחרה.
+    // רחוב/שכונה: השלמה מ-GovMap בדפדפן, ממוקדת לעיר שנבחרה.
     const t = setTimeout(async () => {
       try {
         const searchText = cityForStreet?.trim() ? `${q} ${cityForStreet.trim()}` : q;
         const res = await autocompleteAddress(searchText);
-        const wanted = res.filter((r) => r.type === "street" || r.type === "address");
-        const list = (wanted.length ? wanted : res).slice(0, 7);
+        // שכונה: מקדמים תוצאות מסוג "שכונה"; רחוב: מסוג רחוב/כתובת.
+        const wanted =
+          kind === "neighborhood"
+            ? res.filter((r) => r.type === "neighborhood")
+            : res.filter((r) => r.type === "street" || r.type === "address");
+        const fallback =
+          kind === "neighborhood"
+            ? res.filter((r) => r.type === "neighborhood" || r.type === "street" || r.type === "address")
+            : res;
+        const list = (wanted.length ? wanted : fallback).slice(0, 7);
         setItems(list);
         setOpen(list.length > 0);
         setActive(-1);
@@ -938,7 +946,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 icon={<MapPin size={18} className="text-indigo-500 shrink-0" />}
               />
               <AddressAutocomplete
-                kind="street"
+                kind="neighborhood"
                 value={neighborhood}
                 onChange={setNeighborhood}
                 onPickCity={(c) => !city.trim() && setCity(c)}

@@ -197,8 +197,8 @@ export interface AutocompleteMatch {
 function parseAutoId(id: unknown, type: string): { streetName?: string; cityName?: string } {
   const parts = String(id || "").split("|");
   if (!parts.length) return {};
-  if (type === "street" || type === "address") {
-    // שני השדות האחרונים: רחוב ואז עיר.
+  if (type === "street" || type === "address" || type === "neighborhood") {
+    // שני השדות האחרונים: רחוב/שכונה ואז עיר.
     const cityName = parts[parts.length - 1] || undefined;
     const streetName = parts[parts.length - 2] || undefined;
     return { streetName, cityName };
