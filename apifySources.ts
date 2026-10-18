@@ -599,6 +599,39 @@ function latLngToMercator(lat: unknown, lng: unknown): [number, number] | undefi
   return [x, y];
 }
 
+/**
+ * מחלץ קואורדינטה מהשורה הגולמית — שמות השדות משתנים בין גרסאות האקטור,
+ * ולכן בודקים כמה מועמדים: lat/lng, נגזרות שלהם, קינון, מערך ו-WKT POINT.
+ */
+function extractCoord(r: any): [number, number] | undefined {
+  let la = r?.lat ?? r?.latitude ?? r?.Lat ?? r?.y ?? null;
+  let ln = r?.lng ?? r?.lon ?? r?.long ?? r?.longitude ?? r?.Lng ?? r?.x ?? null;
+  if ((la == null || ln == null) && r?.location && typeof r.location === "object") {
+    la = r.location.lat ?? r.location.latitude ?? la;
+    ln = r.location.lng ?? r.location.lon ?? r.location.longitude ?? ln;
+  }
+  if ((la == null || ln == null) && Array.isArray(r?.coordinates) && r.coordinates.length >= 2) {
+    ln = r.coordinates[0];
+    la = r.coordinates[1];
+  }
+  if (la != null && ln != null) {
+    const laN = Number(la);
+    // קואורדינטות ישראל: lat ~29–34, lng ~34–36. אם הערכים גדולים — כבר מרקטור.
+    if (Number.isFinite(laN) && Math.abs(laN) <= 90) return latLngToMercator(la, ln);
+    const lnN = Number(ln);
+    if (Number.isFinite(laN) && Number.isFinite(lnN)) return [lnN, laN];
+  }
+  const wkt = r?.shape || r?.geometry || r?.wkt;
+  if (typeof wkt === "string" && wkt.startsWith("POINT(")) {
+    const n = wkt.slice(6, -1).trim().split(/\s+/).map(Number);
+    if (n.length === 2 && n.every(Number.isFinite)) {
+      // POINT של govmap הוא מרקטור (ערכים גדולים); של lon/lat — קטנים.
+      return Math.abs(n[1]) <= 90 ? latLngToMercator(n[1], n[0]) : [n[0], n[1]];
+    }
+  }
+  return undefined;
+}
+
 /** מפצל "לוי אשכול 86" ל-{ street, house }. */
 function splitAddress(addr: unknown): { street: string; house: string } {
   const s = String(addr ?? "").trim();
@@ -658,7 +691,7 @@ function mapNadlanRow(r: any, i: number): NadlanDeal | null {
     source: "neighborhood",
     distanceMeters: 0,
     saleClass,
-    coord: latLngToMercator(r?.lat, r?.lng),
+    coord: extractCoord(r),
     gush: r?.gush != null ? String(r.gush) : undefined,
     helka: r?.helka != null ? String(r.helka) : undefined,
     tatHelka: r?.tatHelka != null ? String(r.tatHelka) : undefined,
@@ -670,12 +703,12 @@ function mapNadlanRow(r: any, i: number): NadlanDeal | null {
  * עיר + דלי-זמן בלבד, בלי רחוב/חדרים/טווח מדויק — הסינון העדין נעשה בלקוח.
  * כך חיפוש חוזר באותה עיר (גם ברחוב/חדרים אחרים) מוגש חינם מהמטמון.
  */
-export async function fetchNadlanDeals(
+export async function fetchNadlanDealsRaw(
   city: string,
   monthsBack = 24,
   maxItems = 120,
   cacheOnly = false,
-): Promise<NadlanDeal[]> {
+): Promise<any[]> {
   const canonical = canonicalCity(city);
   const input: Record<string, unknown> = {
     dealDateRange: monthsToNadlanRange(monthsBack),
@@ -684,7 +717,16 @@ export async function fetchNadlanDeals(
   if (canonical) input.cities = [canonical];
   else input.customCities = [city.trim()];
 
-  const rows = await runActor(ACTORS.nadlan, input, 300000, cacheOnly);
+  return runActor(ACTORS.nadlan, input, 300000, cacheOnly);
+}
+
+export async function fetchNadlanDeals(
+  city: string,
+  monthsBack = 24,
+  maxItems = 120,
+  cacheOnly = false,
+): Promise<NadlanDeal[]> {
+  const rows = await fetchNadlanDealsRaw(city, monthsBack, maxItems, cacheOnly);
   return rows
     .map(mapNadlanRow)
     .filter((d): d is NadlanDeal => d !== null);

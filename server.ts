@@ -5,7 +5,7 @@ import * as xlsx from "xlsx";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, fetchNadlanDeals, CacheMissError, getTokens } from "./apifySources";
+import { fetchYad2, fetchYad1, fetchMadlan, fetchFacebook, fetchNadlanDeals, fetchNadlanDealsRaw, CacheMissError, getTokens } from "./apifySources";
 import { isGithubStoreEnabled } from "./githubStore";
 import { verifyCredentials, changePassword, currentUser, isUsingDefaultPassword } from "./serverAuth";
 
@@ -940,6 +940,12 @@ app.get("/api/deals", async (req, res) => {
   }
 
   try {
+    // raw=1: החזרת השורות הגולמיות מהמטמון בלבד (ללא חיוב) — לאבחון בלבד.
+    if (req.query.raw === "1") {
+      const raw = await fetchNadlanDealsRaw(city, monthsBack, maxItems, true);
+      res.json({ source: "nadlan-raw", city, count: raw.length, sampleKeys: raw[0] ? Object.keys(raw[0]) : [], sample: raw.slice(0, 2) });
+      return;
+    }
     const deals = await fetchNadlanDeals(city, monthsBack, maxItems, cacheOnly);
     res.json({ source: "nadlan", city, count: deals.length, deals });
   } catch (error: any) {
