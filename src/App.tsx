@@ -139,28 +139,34 @@ function splitTextByCity(text: string, cities: string[]): { name: string; city: 
   const norm = (s: string) =>
     (s || "").replace(/["'`׳״]/g, "").replace(/[-־]/g, " ").replace(/\s+/g, " ").trim();
   const nt = norm(text);
-  let bestCity = "";
-  let bestWords = 0;
+  // מזהים עיר בסוף ("אדמונד סחייק ירושלים" — פורמט GovMap) או בהתחלה
+  // ("ירושלים אדמונד סחייק" — סדר עברי טבעי). הארוך ביותר מנצח; בתיקו הסוף עדיף.
+  let best: { city: string; pos: "all" | "suffix" | "prefix"; words: number } | null = null;
   for (const c of cities) {
     const nc = norm(c);
     if (!nc) continue;
-    // התאמה מלאה או סיומת בגבול מילה — וגם הבסיס בלי "יפו" (GovMap כותב "תל אביב").
-    const base = nc.replace(/ יפו$/, "").trim();
+    const base = nc.replace(/ יפו$/, "").trim(); // GovMap כותב "תל אביב" ולא "תל אביב יפו"
     for (const cand of [nc, base]) {
       if (cand.length < 2) continue;
-      if (nt === cand || nt.endsWith(" " + cand)) {
-        const w = cand.split(" ").length;
-        if (w > bestWords) {
-          bestWords = w;
-          bestCity = c;
-        }
+      const w = cand.split(" ").length;
+      let pos: "all" | "suffix" | "prefix" | null = null;
+      if (nt === cand) pos = "all";
+      else if (nt.endsWith(" " + cand)) pos = "suffix";
+      else if (nt.startsWith(cand + " ")) pos = "prefix";
+      if (!pos) continue;
+      // עדיפות: יותר מילים; בתיקו — all > suffix > prefix.
+      const rank = (p: string) => (p === "all" ? 2 : p === "suffix" ? 1 : 0);
+      if (!best || w > best.words || (w === best.words && rank(pos) > rank(best.pos))) {
+        best = { city: c, pos, words: w };
       }
     }
   }
-  if (bestCity) {
+  if (best) {
     const words = text.trim().split(/\s+/);
-    const name = words.slice(0, Math.max(0, words.length - bestWords)).join(" ").trim();
-    return { name: name || text.trim(), city: bestCity };
+    let name = "";
+    if (best.pos === "suffix") name = words.slice(0, Math.max(0, words.length - best.words)).join(" ");
+    else if (best.pos === "prefix") name = words.slice(best.words).join(" ");
+    return { name: name.trim(), city: best.city };
   }
   return { name: text.trim(), city: "" };
 }
