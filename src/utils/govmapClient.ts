@@ -492,8 +492,9 @@ async function fetchCityDeals(city: string, monthsBack: number, forceFresh = fal
   }
 
   try {
-    // maxItems גבוה יותר (180) לכיסוי רחב יותר של העיר במשיכה אחת.
-    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=180${
+    // maxItems=120: איזון מוכח בין כיסוי למהירות (מעל זה האקטור חורג ממגבלת
+    // ה-run-sync של Apify ~5 דק׳ ונכשל). משיכה ראשונה לעיר ~3 דק׳, אח״כ ממטמון.
+    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120${
       forceFresh ? "&fresh=1" : ""
     }`;
     const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
