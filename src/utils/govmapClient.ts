@@ -480,11 +480,11 @@ function monthsBucket(monthsBack: number): string {
  * מקומי + גיבוי seed. השאיבה ברמת עיר בכוונה — כך חיפוש חוזר באותה עיר
  * (גם ברחוב/חדרים/טווח אחרים) מוגש חינם מהמטמון. הסינון העדין נעשה בלקוח.
  */
-async function fetchCityDeals(city: string, monthsBack: number, forceFresh = false, area = ""): Promise<Deal[]> {
-  const areaKey = area.trim();
-  // המפתח כולל את האזור: מיקוד לשכונה/רחוב מחזיר עסקאות אחרות מ"כל העיר",
-  // ולכן נשמר בנפרד — כך חיפוש חוזר לאותו אזור מוגש חינם מהמטמון.
-  const cacheKey = `deals_${city.trim()}_${areaKey}_${monthsBucket(monthsBack)}`;
+async function fetchCityDeals(city: string, monthsBack: number, forceFresh = false): Promise<Deal[]> {
+  // שאיבה ברמת עיר בלבד, בלי מיקוד-אזור דרך האקטור: מיקוד לפי רחוב גרם
+  // לאקטור לסרוק את כל העיר ולהיתקע דקות. מטמון אחד לעיר משרת את כל
+  // החיפושים בה (רחוב/שכונה/חדרים/טווח), והסינון העדין נעשה בלקוח — מהיר.
+  const cacheKey = `deals_${city.trim()}_${monthsBucket(monthsBack)}`;
   // חיפוש טרי: מדלגים על המטמון המקומי ועל ה-seed, ושואבים מהשרת מחדש.
   if (!forceFresh) {
     const cached = readLocalCache<Deal[]>(cacheKey);
@@ -492,9 +492,10 @@ async function fetchCityDeals(city: string, monthsBack: number, forceFresh = fal
   }
 
   try {
-    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=120${
-      areaKey ? `&area=${encodeURIComponent(areaKey)}` : ""
-    }${forceFresh ? "&fresh=1" : ""}`;
+    // maxItems גבוה יותר (180) לכיסוי רחב יותר של העיר במשיכה אחת.
+    const url = `${API_BASE}/api/deals?city=${encodeURIComponent(city)}&months=${monthsBack}&maxItems=180${
+      forceFresh ? "&fresh=1" : ""
+    }`;
     const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
     if (r.ok) {
       const d = await r.json();
@@ -554,18 +555,8 @@ export async function findRecentDealsForAddress(
     Math.round((now.getTime() - new Date(fromStr).getTime()) / (30 * 24 * 3600 * 1000)),
   );
 
-  // האזור למיקוד השאיבה: השכונה עדיפה (מדייקת את האזור), ואם אין —
-  // שם הרחוב ללא מספר בית. בלעדיו שאיבת "עיר" מחזירה שכונה אקראית אחת.
-  const streetArea = (options.street || "").replace(/[\s,]+\d+[א-ת]?\s*$/, "").trim();
-  const areaText = (options.neighborhood || "").trim() || streetArea;
-
-  // שאיבה ממוקדת-אזור (מטמון + seed), ואז סינון מקומי מדויק.
-  let all = await fetchCityDeals(city, monthsBack, options.forceFresh, areaText);
-  // רשת ביטחון: אם מיקוד האזור לא החזיר כלום (למשל שם רחוב שהאקטור לא זיהה),
-  // נופלים לשאיבה ברמת עיר כדי שלא יישאר מסך ריק.
-  if (!all.length && areaText) {
-    all = await fetchCityDeals(city, monthsBack, options.forceFresh, "");
-  }
+  // שאיבה ברמת עיר (מהיר, מטמון משותף), ואז סינון מקומי מדויק.
+  const all = await fetchCityDeals(city, monthsBack, options.forceFresh);
   if (!all.length) return [];
 
   // 1) חלון תאריכים (השוואת מחרוזות YYYY-MM-DD בטוחה).
@@ -582,7 +573,18 @@ export async function findRecentDealsForAddress(
     if (options.helka) deals = deals.filter((d) => String(d.helka || "") === String(options.helka));
   }
 
-  // 4) סינון/תיוג רחוב. פחות מ-3 התאמות אינו מדגם — נשארים ברמת עיר.
+  // 4) סינון שכונה (אם סופקה) — לפי שם השכונה שבעסקה.
+  const nbQuery = normStreetKey(options.neighborhood || "");
+  if (nbQuery && nbQuery.length >= 2) {
+    const inHood = deals.filter((d) => {
+      const dn = normStreetKey(d.neighborhood);
+      return dn && (dn.includes(nbQuery) || nbQuery.includes(dn));
+    });
+    // מספיק התאמות → מצמצמים לשכונה; אחרת נשארים ברמת עיר (לא מסך ריק).
+    if (inHood.length >= 2) deals = inHood;
+  }
+
+  // 5) סינון/תיוג רחוב. פחות מ-3 התאמות אינו מדגם — נשארים ברמת עיר.
   const { name: streetName, house: streetHouse } = parseStreetInput(options.street || "");
   if (streetName && streetName.length >= 2) {
     const tagged = deals.map((d) => {
